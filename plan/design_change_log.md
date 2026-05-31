@@ -321,6 +321,58 @@ def edge_preserve():
 4. **Degradation은 현실적인 강도로** — strength=0.5가 적정 (σ=15, γ=0.725)
 5. **PSNR만으로 평가 불가** — 시각적 quality와 PSNR이 반드시 일치하지 않음
 
+---
+
+## Iteration 2: Wavelet 추가 + Preset 최적화 (2026-05-31 13:00~14:00)
+
+### Wavelet Denoising 추가
+
+**도입 이유**: Wavelet은 다중 해상도 분석으로 FFT보다 edge 보존에 유리함.
+- `pywt.wavedec2()`로 3레벨 db4 decomposition
+- VisuShrink universal threshold: `σ * sqrt(2*log(N))`
+- Soft thresholding으로 detail coefficient 처리
+
+**등록**: `filters.py`에 `@register("wavelet")`로 등록.
+**Preset**: `wavelet-denoise` 추가.
+
+### Preset 전면 재측정 (REAL_WORLD_PICTURE, strength=0.5)
+
+| Preset | PSNR | SSIM | Edge% | Time | 특징 |
+|--------|------|------|-------|------|------|
+| **edge-preserve** | **17.77** | 0.466 | 79% | 0.33s | 기본, NLM+Bilateral+Unsharp |
+| **fast-denoise** | 16.59 | 0.434 | **153%** | **0.01s** | 비디오 최적 (30× 빠름) |
+| nlm-denoise | 16.58 | 0.423 | 171% | 0.23s | NLM 중심 |
+| wiener-denoise | 14.68 | 0.469 | 67% | 0.05s | 참고용 |
+| wavelet-denoise | — | — | — | — | 연구용 (신규) |
+| aggressive | **18.69** | **0.626** | 31% | 0.26s | PSNR 최고, Edge 최저 |
+| research-best | 17.70 | **0.496** | 73% | 0.25s | SSIM 최고 |
+
+### 결정: Fast Denoise를 비디오 권장으로 승격
+
+edge-preserve(0.33s)는 이미지에는 좋지만 비디오(1926프레임 × 0.33s = 10.6분)에는 너무 느림.
+fast-denoise(0.01s)는 30× 빠르면서 PSNR 16.59, Edge 153%로 우수.
+
+권장:
+- **이미지**: `--preset edge-preserve` (기본)
+- **비디오**: `--preset fast-denoise` (0.01s/프레임)
+- **연구**: `--preset wavelet-denoise` 또는 `--preset research-best`
+
+### Preset별 최적 파라미터
+
+```python
+# Fast Denoise (비디오 권장)
+cfg.add("bilateral", d=5, sigma_color=30, sigma_space=30)
+cfg.add("channel_correction", clamp_min=0.9, clamp_max=1.1)
+cfg.add("unsharp_mask", strength=0.2, radius=0.5, threshold=10)
+
+# Edge-Preserve (이미지 기본)
+cfg.add("median", ksize=3)
+cfg.add("nlm", h=5, template_window=7, search_window=21)
+cfg.add("bilateral", d=7, sigma_color=50, sigma_space=50)
+cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)
+cfg.add("unsharp_mask", strength=0.3, radius=0.5, threshold=10)
+```
+
 ### 남은 과제
 
 - [ ] 필터 순서에 따른 결과값 변이 추적
@@ -328,9 +380,8 @@ def edge_preserve():
   - [ ] 색감 evaluation
   - [ ] 밝기 evaluation
   - [ ] edge evaluation
-  - [ ] gussian noise evaluation
+  - [ ] gaussian noise evaluation
   - [ ] artifacts evaluation
-- [ ] 비디오 처리 속도 최적화 (현재 0.3초/프레임, 64초 영상에 ~10분 소요)
-- [ ] NLM 파라미터 자동 추정 (h값을 noise level에 따라 자동 조절)
-- [ ] 다중 프레임 temporal denoising (VBM3D 등)
-- [ ] 실제 아날로그 영상(analog_whoop_footage)에 대한 정량적 평가 지표
+- [ ] bilateral 파라미터 자동 추정 (sigma_color를 noise level에 따라 조절)
+- [ ] 실제 아날로그 영상(analog_whoop_footage) 정량 평가
+- [ ] temporal denoising (인접 프레임 활용) — VBM3D 등

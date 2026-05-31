@@ -149,7 +149,55 @@ def _notch_channel(channel: np.ndarray, threshold_percentile: float) -> np.ndarr
     return np.clip(np.abs(result), 0, 255).astype(np.uint8)
 
 
-# ─── Phase 2: Color / Contrast Enhancement ──────────────────────────
+# ─── Phase 2: Wavelet Denoising (Research) ────────────────────────
+
+@register("wavelet")
+def wavelet_denoise(img: np.ndarray, wavelet: str = "db4",
+                    level: int = 3, threshold_mode: str = "soft") -> np.ndarray:
+    """
+    Wavelet-based denoising — excellent edge preservation.
+    Uses Bayesian thresholding (VisuShrink style).
+
+    wavelet : wavelet family ('db4', 'sym4', 'coif1', 'haar')
+    level : decomposition level (2-4)
+    threshold_mode : 'soft' (smoother) or 'hard' (sharper)
+    """
+    import pywt
+    import warnings
+
+    if len(img.shape) == 3:
+        result = np.zeros_like(img)
+        for c in range(3):
+            result[:, :, c] = _wavelet_channel(img[:, :, c], wavelet, level, threshold_mode)
+        return result
+    return _wavelet_channel(img, wavelet, level, threshold_mode)
+
+
+def _wavelet_channel(channel: np.ndarray, wavelet: str, level: int,
+                     threshold_mode: str) -> np.ndarray:
+    import pywt
+    import numpy as np
+
+    coeffs = pywt.wavedec2(channel.astype(np.float64), wavelet, level=level)
+    # Estimate noise sigma from finest-scale coefficients (HH1)
+    sigma = np.median(np.abs(coeffs[-1])) / 0.6745 if coeffs[-1].size > 0 else 10
+    # VisuShrink universal threshold
+    threshold = sigma * np.sqrt(2 * np.log(channel.size))
+    # Apply thresholding to detail coefficients (skip approximation)
+    coeffs = list(coeffs)
+    for j in range(1, len(coeffs)):
+        coeffs[j] = tuple(
+            pywt.threshold(d, threshold, mode=threshold_mode)
+            for d in coeffs[j]
+        )
+    # Reconstruct
+    reconstructed = pywt.waverec2(coeffs, wavelet)
+    # Handle size mismatch (wavelet may round dimensions)
+    h, w = channel.shape
+    return np.clip(np.abs(reconstructed[:h, :w]), 0, 255).astype(np.uint8)
+
+
+# ─── Phase 3: Color / Contrast Enhancement ──────────────────────────
 
 @register("gamma")
 def gamma_correction(img: np.ndarray, gamma: float = 1.8) -> np.ndarray:

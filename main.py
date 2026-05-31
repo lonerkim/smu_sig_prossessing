@@ -32,9 +32,10 @@ from smu_sig_prossessing.degradation import degrade_image
 
 PRESETS: dict[str, PipelineConfig] = {
     "edge-preserve": PipelineConfig.edge_preserve(),
-    "nlm-denoise": PipelineConfig.nlm_denoise(),
     "fast-denoise": PipelineConfig.fast_denoise(),
+    "nlm-denoise": PipelineConfig.nlm_denoise(),
     "wiener-denoise": PipelineConfig.wiener_denoise(),
+    "wavelet-denoise": PipelineConfig.wavelet_denoise(),
     "aggressive": PipelineConfig.aggressive(),
     "research-best": PipelineConfig.research_best(),
 }
