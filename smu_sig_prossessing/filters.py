@@ -39,14 +39,14 @@ def gaussian_lowpass(img: np.ndarray, sigma: float = 1.5) -> np.ndarray:
 
 
 @register("wiener")
-def wiener_filter(img: np.ndarray, noise_var: float = 625) -> np.ndarray:
+def wiener_filter(img: np.ndarray, noise_var: float = 400) -> np.ndarray:
     """
     Wiener filter — frequency-domain adaptive denoising.
-    Only noise removal filter used in the recommended pipeline (no Gaussian LP).
+    H(w) = max(|F|² - N, 0) / max(|F|², N)
 
-    The Wiener filter estimates the original signal by:
-      H(w) = S(w) / (S(w) + N(w))
-    where S(w) is the signal power spectrum and N(w) is the noise power.
+    Preserves edges while smoothing noise. Use instead of Gaussian LP.
+    Lower noise_var = less aggressive denoising (more detail preserved).
+    Default 400 corresponds to σ≈20 noise estimate.
     """
     if len(img.shape) == 3:
         result = np.zeros_like(img)
@@ -59,13 +59,12 @@ def wiener_filter(img: np.ndarray, noise_var: float = 625) -> np.ndarray:
 def _wiener_channel(channel: np.ndarray, noise_var: float) -> np.ndarray:
     f = np.fft.fft2(channel.astype(np.float64))
     f_shift = np.fft.fftshift(f)
-
     power = np.abs(f_shift) ** 2
-    signal_power = np.mean(power)
 
-    # Wiener: H = S / (S + N)
-    h = signal_power / (power + noise_var)
-    h = np.clip(h, 0, 1)
+    # Correct Wiener: H = max(S, 0) / max(S + N, N)
+    # where S = |F|² - N is the estimated signal power
+    signal_est = np.maximum(power - noise_var, 0)
+    h = signal_est / np.maximum(signal_est + noise_var, 1e-10)
 
     result = f_shift * h
     result = np.fft.ifftshift(result)
