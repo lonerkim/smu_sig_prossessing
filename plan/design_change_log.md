@@ -323,6 +323,13 @@ def edge_preserve():
 
 ### 남은 과제
 
+- [ ] 필터 순서에 따른 결과값 변이 추적
+- [ ] 정량적/자동 evaluation을 위한 pipeline 설계
+  - [ ] 색감 evaluation
+  - [ ] 밝기 evaluation
+  - [ ] edge evaluation
+  - [ ] gussian noise evaluation
+  - [ ] artifacts evaluation
 - [ ] 비디오 처리 속도 최적화 (현재 0.3초/프레임, 64초 영상에 ~10분 소요)
 - [ ] NLM 파라미터 자동 추정 (h값을 noise level에 따라 자동 조절)
 - [ ] 다중 프레임 temporal denoising (VBM3D 등)
