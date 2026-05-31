@@ -64,74 +64,93 @@ class PipelineConfig:
     # ── Presets ──────────────────────────────────────────────────────
 
     @staticmethod
-    def wiener_only() -> PipelineConfig:
+    def edge_preserve() -> PipelineConfig:
         """
-        Recommended default — clean denoising with minimal color/contrast change.
-        No aggressive gamma or histogram equalization that would alter colors.
+        NEW DEFAULT — Edge-preserving denoising.
+        NLM + Bilateral = preserves edges while removing noise.
+        Unsharp mask recovers edge contrast lost during denoising.
+        Gentle gamma (1.1) only slightly brightens, no color washout.
+        """
+        cfg = PipelineConfig(label="Edge-Preserve (NLM+Bilateral)")
+        cfg.add("median", ksize=3)                                   # impulse noise removal
+        cfg.add("nlm", h=5, template_window=7, search_window=21)     # NLM (mild, edge-preserving)
+        cfg.add("bilateral", d=5, sigma_color=30, sigma_space=30)    # bilateral (edge-preserving smooth)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15) # gentle color balance
+        cfg.add("unsharp_mask", strength=0.3, radius=0.5, threshold=10)  # edge recovery
+        return cfg
+
+    @staticmethod
+    def nlm_denoise() -> PipelineConfig:
+        """
+        NLM-only denoising — slow but highest quality.
+        Best detail retention, no frequency-domain artifacts.
+        """
+        cfg = PipelineConfig(label="NLM Denoise")
+        cfg.add("nlm", h=8, template_window=7, search_window=21)
+        cfg.add("bilateral", d=5, sigma_color=20, sigma_space=20)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)
+        cfg.add("unsharp_mask", strength=0.3, radius=0.5, threshold=5)
+        return cfg
+
+    @staticmethod
+    def fast_denoise() -> PipelineConfig:
+        """
+        Fast denoising — bilateral only (no NLM).
+        Good for quick previews or large images.
+        """
+        cfg = PipelineConfig(label="Fast Denoise (Bilateral)")
+        cfg.add("bilateral", d=7, sigma_color=50, sigma_space=50)
+        cfg.add("channel_correction", clamp_min=0.9, clamp_max=1.1)
+        cfg.add("unsharp_mask", strength=0.2, radius=0.5, threshold=10)
+        return cfg
+
+    @staticmethod
+    def wiener_denoise() -> PipelineConfig:
+        """
+        Wiener-based denoising — frequency domain.
+        Can cause blur/ringing. Best for periodic/gaussian noise.
         """
         cfg = PipelineConfig(label="Wiener Denoise")
-        cfg.add("median", ksize=3)                                   # impulse noise
-        cfg.add("wiener", noise_var=400)                             # frequency denoise
-        cfg.add("fft_notch", threshold_percentile=99.5)              # periodic noise
-        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15) # gentle color balance
-        cfg.add("gamma", gamma=1.15)                                 # very mild brightening
-        return cfg
-
-    @staticmethod
-    def edge_preserving() -> PipelineConfig:
-        """
-        Edge-preserving denoising using NLM + gentle Wiener.
-        Best detail retention, no aggressive enhancement.
-        """
-        cfg = PipelineConfig(label="Edge-Preserving Denoise")
-        cfg.add("median", ksize=3)
-        cfg.add("nlm", h=8, template_window=7, search_window=21)
-        cfg.add("wiener", noise_var=300)
-        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)
-        cfg.add("unsharp_mask", strength=0.5, radius=1.0, threshold=5)
-        return cfg
-
-    @staticmethod
-    def light_denoise() -> PipelineConfig:
-        """Light denoising — minimal change, for already decent footage."""
-        cfg = PipelineConfig(label="Light Denoise")
         cfg.add("median", ksize=3)
         cfg.add("wiener", noise_var=200)
+        cfg.add("fft_notch", threshold_percentile=99.5)
         cfg.add("channel_correction", clamp_min=0.9, clamp_max=1.1)
+        cfg.add("unsharp_mask", strength=0.4, radius=0.5, threshold=10)
+        cfg.add("gamma", gamma=1.1)
         return cfg
 
     @staticmethod
     def aggressive() -> PipelineConfig:
         """
         Strong denoising for very noisy footage.
-        Bilateral + Wiener combination, still avoids aggressive color shift.
+        Multiple passes but with unsharp to prevent blur.
         """
         cfg = PipelineConfig(label="Aggressive Denoise")
         cfg.add("median", ksize=5)
-        cfg.add("bilateral", d=7, sigma_color=50, sigma_space=50)
-        cfg.add("wiener", noise_var=600)
-        cfg.add("fft_notch", threshold_percentile=99.0)
+        cfg.add("nlm", h=10, template_window=7, search_window=21)
+        cfg.add("bilateral", d=9, sigma_color=75, sigma_space=75)
+        cfg.add("wiener", noise_var=300)
         cfg.add("channel_correction")
-        cfg.add("gamma", gamma=1.2)
+        cfg.add("unsharp_mask", strength=0.5, radius=0.5, threshold=5)
+        cfg.add("gamma", gamma=1.15)
         return cfg
 
     @staticmethod
     def research_best() -> PipelineConfig:
         """
-        Best research configuration — NLM + Wiener + mild sharpening.
-        Avoids histogram equalization which causes color/contrast artifacts.
+        Best research configuration — multi-stage edge-preserving denoise.
+        NLM + Bilateral + gentle Wiener + unsharp recovery.
         """
         cfg = PipelineConfig(label="Research Best")
         cfg.add("median", ksize=3)
-        cfg.add("nlm", h=10, template_window=7, search_window=21)
-        cfg.add("wiener", noise_var=400)
-        cfg.add("fft_notch", threshold_percentile=99.0)
-        cfg.add("bilateral", d=5, sigma_color=30, sigma_space=30)
+        cfg.add("nlm", h=8, template_window=7, search_window=21)
+        cfg.add("bilateral", d=5, sigma_color=25, sigma_space=25)
+        cfg.add("wiener", noise_var=150)
         cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)
-        cfg.add("unsharp_mask", strength=0.5, radius=1.0, threshold=5)
+        cfg.add("unsharp_mask", strength=0.4, radius=0.5, threshold=5)
         return cfg
 
 
-# ─── Default configuration for backward compatibility ───────────────
+# ─── Default configuration ──────────────────────────────────────────
 
-DEFAULT_PIPELINE = PipelineConfig.wiener_only()
+DEFAULT_PIPELINE = PipelineConfig.edge_preserve()

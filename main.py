@@ -31,8 +31,10 @@ from smu_sig_prossessing.degradation import degrade_image
 # ─── Preset map ─────────────────────────────────────────────────────
 
 PRESETS: dict[str, PipelineConfig] = {
-    "wiener-only": PipelineConfig.wiener_only(),
-    "edge-preserving": PipelineConfig.edge_preserving(),
+    "edge-preserve": PipelineConfig.edge_preserve(),
+    "nlm-denoise": PipelineConfig.nlm_denoise(),
+    "fast-denoise": PipelineConfig.fast_denoise(),
+    "wiener-denoise": PipelineConfig.wiener_denoise(),
     "aggressive": PipelineConfig.aggressive(),
     "research-best": PipelineConfig.research_best(),
 }
@@ -225,9 +227,9 @@ def main():
     )
     parser.add_argument("-p", "--path", type=str, default=None,
                         help="Input file glob pattern (e.g. 'input/*.jpg' or 'input/*.{mp4,jpg}')")
-    parser.add_argument("--preset", type=str, default="wiener-only",
+    parser.add_argument("--preset", type=str, default="edge-preserve",
                         choices=list(PRESETS.keys()),
-                        help="Pipeline preset to apply (default: wiener-only)")
+                        help="Pipeline preset to apply (default: edge-preserve)")
     parser.add_argument("--degrade", type=str, default="basic",
                         choices=list(DEGRADE_MODES.keys()),
                         help="Degradation type (default: basic)")
