@@ -10,7 +10,7 @@
 - 🔧 **필터 모듈화** — 각 단계를 ON/OFF 가능한 FilterConfig로 분리
 - 🎯 **Wiener 필터 단독 사용** — Gaussian Lowpass 제거 (불필요한 blur 최소화)
 - 🧪 **추가 연구 기법** — NLM, Bilateral, CLAHE, Unsharp Mask, Wiener Deconvolution
-- 📊 **정성/정량 평가 도구** — PSNR/SSIM + 4-way visual comparison
+- 📂 **CLI 기반 실제 파일 처리** — `-p "glob"` + `--preset` 플래그
 
 ## 구조
 ```
@@ -23,15 +23,14 @@ smu_sig_prossessing/        — 핵심 패키지 (모듈식)
   evaluation.py             — PSNR/SSIM + 시각화
   ntsc_plugin.py            — zhuker/ntsc (ringPattern.npy 포함)
 
-scripts/
-  run_pipeline.py           — 정적 이미지 파이프라인 (합성 + 실제 이미지)
-  run_video.py              — 비디오 파이프라인
-  run_evaluation.py         — 정성적/정량적 평가 도구
-
 input/                      — 입력 데이터 (실제 영상 + 이미지)
   REAL_WORLD_PICTURE.jpg    — 실제 풍경 사진 (4000×1848)
   analog_whoop_footage.mp4  — 아날로그 FPV 드론 영상 (64초, 854×480)
   digital_whoop_footage.mp4 — 디지털 FPV 드론 영상 (118초, 1440×1080)
+
+output/
+  raw/                      — 원본 입력 복사본 (degraded product)
+  processed/                — 파이프라인 적용 결과
 
 plan/
   Project_plan.md           — 프로젝트 계획서 (v2.0)
@@ -41,81 +40,49 @@ plan/
 ## 설치
 
 ```bash
-# 의존성 설치
 pip install opencv-python-headless scikit-image scipy numpy
-
-# 또는 pyproject.toml 기반
-pip install .
 ```
 
 ## 사용법
 
-### 기본 실행
+### 기본 — 경로 패턴 + 프리셋
 
 ```bash
-# 정적 이미지 파이프라인 (합성 이미지 5종 생성 + 평가)
-python main.py
+# 단일 이미지 처리
+python main.py -p "input/REAL_WORLD_PICTURE.jpg" --preset wiener-only
 
-# 비디오 파이프라인 (합성 비디오 생성 + 평가)
-python main.py --video
+# 모든 이미지 한번에 처리
+python main.py -p "input/*.jpg" --preset edge-preserving
 
-# 등록된 필터 목록 확인
+# 비디오 처리 (주의: 프레임당 ~0.3초 소요)
+python main.py -p "input/analog_whoop_footage.mp4" --preset wiener-only
+
+# 여러 확장자 동시 처리
+python main.py -p "input/*.{jpg,mp4}" --preset research-best
+
+# 필터 목록 보기
 python main.py --list-filters
 ```
 
-### 실제 데이터 평가
+### 프리셋 목록
 
-```bash
-# 정성적 평가 — 실제 아날로그 영상 → 시각적 비교 이미지 생성
-# (analog_whoop_footage.mp4: 아날로그 FPV, 64초, 1분 샘플)
-python -c "
-import cv2, os
-from smu_sig_prossessing.config import PipelineConfig
-from smu_sig_prossessing import pipeline as pl
+| 프리셋 | 플래그 | 필터 구성 | 속도 | 용도 |
+|--------|--------|-----------|------|------|
+| **Wiener Only** (권장) | `--preset wiener-only` | Median→Wiener→FFT→Channel→Gamma→HistEq | ⚡빠름 | 일반적인 잡음 제거 |
+| **Edge-Preserving** | `--preset edge-preserving` | Median→NLM→Wiener→FFT→Channel→Gamma→HistEq | 🐢느림 | 엣지 보존이 중요할 때 |
+| **Aggressive** | `--preset aggressive` | Median(k=5)→Bilateral→Wiener→FFT→Channel→Gamma→HistEq | 보통 | 매우 noisy한 영상 |
+| **Research Best** | `--preset research-best` | Median→NLM→Wiener→FFT→Bilateral→Channel→Gamma→HistEq | 🐢느림 | 최고 품질 |
 
-cap = cv2.VideoCapture('input/analog_whoop_footage.mp4')
-for idx in [0, 500, 1000, 1500]:
-    cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-    ret, frame = cap.read()
-    if not ret: continue
-    h, w = frame.shape[:2]
-    canvas = np.zeros((h, w*4, 3), dtype=np.uint8)
-    canvas[:, :w] = frame
-    canvas[:, w:2*w] = pl.apply_pipeline(frame, PipelineConfig.wiener_only())
-    canvas[:, 2*w:3*w] = pl.apply_pipeline(frame, PipelineConfig.edge_preserving())
-    canvas[:, 3*w:] = pl.apply_pipeline(frame, PipelineConfig.research_best())
-    cv2.imwrite(f'output/qualitative_frame_{idx}.png', canvas)
-cap.release()
-"
+### 출력 구조
 
-# 정량적 평가 — 디지털 영상에 인위 열화 후 PSNR/SSIM 측정
-# (digital_whoop_footage.mp4: 디지털 FPV, 118초, 2분 샘플)
-python -c "
-from skimage.metrics import peak_signal_noise_ratio as psnr
-from skimage.metrics import structural_similarity as ssim
-from smu_sig_prossessing.config import PipelineConfig
-from smu_sig_prossessing import pipeline as pl
-from smu_sig_prossessing.degradation import degrade_image
-import cv2, numpy as np
-
-cap = cv2.VideoCapture('input/digital_whoop_footage.mp4')
-clean_frames = []
-for i in range(0, 3000, 200):
-    cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-    ret, f = cap.read()
-    if ret: clean_frames.append(cv2.resize(f, (640, 480)))
-cap.release()
-
-degraded = [degrade_image(f) for f in clean_frames]
-
-for name, cfg in [('Wiener', PipelineConfig.wiener_only()),
-                  ('Edge-Preserving', PipelineConfig.edge_preserving())]:
-    p, s = [], []
-    for c, d in zip(clean_frames, degraded):
-        r = pl.apply_pipeline(d, cfg)
-        p.append(psnr(c, r)); s.append(ssim(c,r,channel_axis=-1))
-    print(f'{name}: PSNR={np.mean(p):.2f}±{np.std(p):.2f} dB, SSIM={np.mean(s):.4f}')
-"
+```
+output/
+  raw/
+    REAL_WORLD_PICTURE.png          — 입력 원본 (RAW)
+    analog_whoop_footage.mp4         — 입력 비디오 원본
+  processed/
+    REAL_WORLD_PICTURE.png          — 파이프라인 적용 결과
+    analog_whoop_footage.mp4         — 파이프라인 적용 결과 비디오
 ```
 
 ### PipelineConfig 프로그래밍 예제
@@ -135,59 +102,41 @@ my_cfg.add("nlm", h=8, template_window=7)               # ON
 my_cfg.add("gamma", gamma=1.5)                          # ON
 my_cfg.add("histogram_eq_clahe", clip_limit=2.0)        # ON (CLAHE)
 
-# 적용
 img = cv2.imread('input/REAL_WORLD_PICTURE.jpg')
 result = pl.apply_pipeline(img, my_cfg)
-
-# 특정 필터만 끄기
-my_cfg.disable("nlm")
-result_no_nlm = pl.apply_pipeline(img, my_cfg)
-
-# 파라미터 변경
-my_cfg.get("wiener").params["noise_var"] = 400
+cv2.imwrite('output/processed/my_result.png', result)
 ```
-
-## PipelineConfig 프리셋
-
-| 프리셋 | 필터 구성 | 속도 | 용도 |
-|--------|-----------|------|------|
-| **Wiener Only** (권장) | Median→Wiener→FFT→Channel→Gamma→HistEq | ⚡빠름 | 일반적인 잡음 제거 |
-| **Edge-Preserving** | Median→NLM→Wiener→FFT→Channel→Gamma→HistEq | 🐢느림 | 엣지 보존이 중요할 때 |
-| **Aggressive** | Median(k=5)→Bilateral→Wiener→FFT→Channel→Gamma→HistEq | 보통 | 매우 noisy한 영상 |
-| **Research Best** | Median→NLM→Wiener→FFT→Bilateral→Channel→Gamma→HistEq | 🐢느림 | 최고 품질 |
 
 ## 등록된 필터 (16개)
 
-| 필터명 | 설명 | 주요 파라미터 |
-|--------|------|-------------|
-| `median` | 미디언 필터 (impulse 잡음) | `ksize=3` |
-| `wiener` | 위너 필터 (주파수 도메인, **권장**) | `noise_var=625` |
-| `nlm` | Non-Local Means (엣지 보존) | `h=10`, `template_window=7` |
-| `bilateral` | Bilateral Filter (엣지 보존 평활화) | `d=9`, `sigma_color=75` |
-| `fft_notch` | FFT 노치 필터 (주기적 잡음) | `threshold_percentile=99.5` |
-| `gamma` | 감마 보정 | `gamma=1.8` |
-| `histogram_eq` | 히스토그램 평활화 (YUV) | — |
-| `histogram_eq_clahe` | CLAHE (적응형) | `clip_limit=2.0` |
-| `channel_correction` | RGB 채널 평균 보정 | `clamp_min=0.7` |
-| `unsharp_mask` | 언샤프 마스크 (블러 복원) | `strength=1.0` |
-| `deblur_wiener` | Wiener 디컨볼루션 (디블러) | `kernel_size=5` |
-| `log_transform` | 로그 변환 | `c=40` |
-| `gaussian_lowpass` | 가우시안 로우패스 (참고용) | `sigma=1.5` |
-
-## 평가 결과 (실제 데이터)
-
-### 정량적 평가 — digital_whoop_footage.mp4
 ```
-Method                  PSNR vs Clean    Denoise Strength
-──────────────────────────────────────────────────────────
-Degraded (baseline)     10.57±0.45 dB    (reference)
-Denoise Only (Wiener)    4.28±0.87 dB    5.86±0.97 dB
-Full Pipeline            8.28±0.85 dB    7.10±0.35 dB   ← Best
+  bilateral              — Bilateral filter (edge-preserving smoothing)
+  channel_correction     — RGB 채널 평균 보정
+  deblur_wiener          — Wiener deconvolution (디블러)
+  fft_notch              — FFT 노치 필터 (주기적 잡음)
+  gamma                  — 감마 보정
+  gaussian_lowpass       — Gaussian LP (참고용)
+  histogram_eq           — 히스토그램 평활화 (YUV)
+  histogram_eq_clahe     — CLAHE (적응형)
+  histogram_eq_gray      — 그레이스케일 히스토그램 평활화
+  log_transform          — 로그 변환
+  median                 — 미디언 필터 (impulse 잡음)
+  nlm                    — Non-Local Means (엣지 보존)
+  nlm_gray               — NLM on luminance only
+  unsharp_mask           — 언샤프 마스크 (블러 복원)
+  wiener                 — 위너 필터 (주파수 도메인, 권장)
 ```
 
-### 정성적 평가 — analog_whoop_footage.mp4
-- 10개 대표 프레임 × 3개 파이프라인 (Wiener / Edge-Preserving / Research Best)
-- 4-way comparison 이미지 → `output/analog_qualitative_frame*.png`
+## 성능 참고
+
+| 작업 | 해상도 | 처리 시간 |
+|------|--------|-----------|
+| 이미지 (wiener-only) | 4000×1848 | ~2초 |
+| 이미지 (edge-preserving) | 4000×1848 | ~8초 |
+| 비디오 프레임 (wiener-only) | 854×480 | ~0.3초/프레임 |
+| 비디오 프레임 (edge-preserving) | 854×480 | ~1.1초/프레임 |
+
+※ FFT 기반 Wiener 필터가 주요 병목입니다. 전체 비디오 처리 시 시간이 오래 걸릴 수 있습니다.
 
 ## 의존성
 - Python 3.11+
