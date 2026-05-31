@@ -3,15 +3,15 @@
 **기말 프로젝트 과제계획서**  
 **6팀 | 지능IoT융합전공 김승민 · 컴퓨터과학과 김원석**  
 **과목: 영상처리 기말 프로젝트**  
-**제출일: 2026년 5월 27일**
+**제출일: 2026년 5월 31일 (v2.0)**
 
 ---
 
 ## 📋 문서 버전 정보
-- **버전**: v1.0 (최종)
+- **버전**: v2.0 (모듈식 리팩토링 + NTSC 통합)
 - **작성자**: 김승민, 김원석
-- **마지막 업데이트**: 2026-05-27
-- **상태**: ✅ 구현 완료 (Phase 0-2)
+- **마지막 업데이트**: 2026-05-31
+- **상태**: ✅ v2.0 구현 완료
 
 ---
 
@@ -20,30 +20,22 @@
 ### 프로젝트명
 **아날로그 영상 잡음 및 색 왜곡 완화를 위한 범용 영상처리 파이프라인 설계**
 
-### Project P_p (P_p.md)
-
 ### 연구 배경 및 필요성
-
 일상에서 사용되는 영상 장비 중 일부는 최신 디지털 카메라처럼 항상 선명한 영상을 제공하지 않는다. 오래된 CCTV, 차량 후방카메라, 저가형 AV 카메라, 무선 영상 송수신 장치, **아날로그 DVR(Digital Video Recorder)** 영상 등에서는 다음과 같은 문제가 나타날 수 있다:
-
-- **화면이 거칠게 보임** (잡음)
-- **색이 틀어짐** (색상 왜곡)
-- **밝기 및 대비가 불안정** (시인성 저하)
-
-이러한 영상 열화는 영상의 내용을 확인하는 데 방해가 된다:
-- 잡음이 심하면 **물체의 윤곽이 흐려짐**
-- 색이 크게 왜곡되면 **장면의 상태를 판단하기 어려움**
-- 밝기/대비가 낮으면 **배경과 물체의 구분이 어려움**
+- 화면이 거칠게 보임 (잡음)
+- 색이 틀어짐 (색상 왜곡)
+- 밝기 및 대비가 불안정 (시인성 저하)
 
 ### 프로젝트 목표
-
 본 프로젝트는 **저화질 영상에서 시인성을 해치는 잡음·색왜곡·대비저하를 수업에서 배운 영상처리 기법으로 완화**하는 범용 파이프라인을 설계·구현·평가하는 것을 목표로 한다.
 
-#### 구체적 목표
-1. ✅ **아날로그 영상에서 자주 나타나는 잡음, 색상 왜곡, 밝기 및 대비 저하를 관찰하고 유형별로 정리**
-2. ✅ **디지털 영상에 비슷한 열화 현상을 인위적으로 추가하여 정량 평가가 가능한 실험 데이터 생성**
-3. ✅ **미디언 필터, 로우패스 필터, 위너 필터, 감마 보정, 로그 연산, 히스토그램 평활화 등 적용하여 성능 비교**
-4. ✅ **실제 아날로그 FPV DVR 영상에 파이프라인 적용하여 현실적인 적용 가능성과 한계 확인**
+#### 구체적 목표 (v2.0 업데이트)
+1. ✅ **NTSC 아날로그 비디오 시뮬레이터(zhuker/ntsc) 통합** — 실제 NTSC 아티팩트(dot crawl, ringing, color bleeding, chroma noise)를 degradation에 활용
+2. ✅ **가우시안 로우패스 + 위너 필터 동시 사용 제거** — 위너 필터만 사용 (Gaussian LP는 제거)
+3. ✅ **필터 모듈화** — 각 파이프라인 단계를 ON/OFF 가능한 FilterConfig로 분리
+4. ✅ **De-blur / blur 최소화** — Unsharp Mask, Wiener Deconvolution, NLM, Bilateral 필터 추가
+5. ✅ **추가 연구 방법 적용** — NLM(Non-Local Means), Bilateral Filter, CLAHE, Unsharp Mask, Wiener Deconvolution
+6. ✅ **모듈식 파이프라인 아키텍처** — `smu_sig_prossessing/` 패키지로 구조화
 
 ---
 
@@ -53,275 +45,160 @@
 
 #### Type A: 정량 평가용 실험 데이터
 - **목적**: PSNR/SSIM을 통한 정량적 성능 평가
-- **구성**: 깨끗한 디지털 이미지 5종 + 인위적 열화 적용
+- **구성**: 깨끗한 디지털 이미지 5종 + 인위적 열화 적용 (기본 + NTSC)
 - **특징**: 원본 영상 보존 → 처리 전후 비교 가능
 
-#### Type B: 실제 적용용 데이터  
+#### Type B: 실제 적용용 데이터
 - **목적**: 현실적인 영상 개선 효과 확인
-- **구성**: 실제 아날로그 FPV DVR 영상 프레임
+- **구성**: 실제 아날로그 FPV DVR 영상 프레임 (Google Drive 샘플)
 - **특징**: 실제 무선 전송 및 녹화 과정 거침
 
 ### 2.2 인위 열화 유형
 
-| 열화 유형 | 설명 | 파라미터 |
-|-----------|------|----------|
-| Gaussian Noise | 화면 전체에 깔린 거친 잡음 | σ = 25 |
-| Impulse Noise | 점처럼 튀는Salt & Pepper 잡음 | p = 0.03 |
-| Color Bias | RGB 채널별 편향 | R:1.3, G:0.7, B:1.1 |
-| Brightness Reduction | 어둡고 저대비 | γ = 0.5 |
-| Periodic Noise | 주기적 사선 잡음 (모터 간섭 시뮬) | freq=25, amp=30 |
-
-### 2.3 테스트 이미지 종류
-
-1. **synthetic_color**: 컬러 그라데이션 + 기하학적 도형
-2. **portrait_mock**: 피부 톤 시뮬레이션 + 배경 패턴
-3. **high_contrast**: 고대비 엣지 테스트 (ringing/dot crawl 확인용)
-4. **low_light**: 어둡고 noise 많은 환경 시뮬
-5. **color_bias**: RGB 채널 별 색 편향 시나리오
+| 열화 유형 | 설명 | 파라미터 | 소스 |
+|-----------|------|----------|------|
+| Gaussian Noise | 화면 전체에 깔린 거친 잡음 | σ = 25 | 기본 |
+| Impulse Noise | 점처럼 튀는 Salt & Pepper 잡음 | p = 0.03 | 기본 |
+| Color Bias | RGB 채널별 편향 | R:1.3, G:0.7, B:1.1 | 기본 |
+| Brightness Reduction | 어둡고 저대비 | γ = 0.5 | 기본 |
+| Periodic Noise | 주기적 사선 잡음 | freq=25, amp=30 | 기본 |
+| **NTSC Dot Crawl** | 3.58MHz 크로마 누설 → 루마 | — | **zhuker/ntsc** |
+| **NTSC Ringing** | 저가 필터에 의한 엣지 에코 | α=0.3~0.99 | **zhuker/ntsc** |
+| **NTSC Color Bleeding** | Y/C 지연 오차에 의한 색번짐 | horiz=1~6 | **zhuker/ntsc** |
+| **NTSC Chroma Noise** | 채도 영역의 컬러 노이즈 | 0~16384 | **zhuker/ntsc** |
+| **VHS Head Switching** | VHS 헤드 전환 노이즈 | — | **zhuker/ntsc** |
 
 ---
 
-## 3. 🔧 구현 방법
+## 3. 🔧 아키텍처 (v2.0)
 
-### 3.1 파이프라인 아키텍처
+### 3.1 패키지 구조
 
 ```
-┌─────────────┐    ┌──────────────┐    ┌───────────────┐    ┌──────────────┐
-│  입력 영상   │───→│  인위 열화   │───→│  잡음 제거     │───→│ 색상/대비    │
-│ (Clean/DVR) │    │ (Phase 0)    │    │ (Phase 1)     │    │ 보정         │
-└─────────────┘    └──────────────┘    └───────────────┘    └──────────────┘
-                                                                     │
-                                                                     ▼
-                                                                ┌──────────────┐
-                                                                │    평가       │
-                                                                │ (PSNR/SSIM)  │
-                                                                └──────────────┘
+smu_sig_prossessing/
+├── __init__.py          # 패키지 임포트
+├── config.py            # PipelineConfig + FilterConfig (모듈식 설정)
+├── filters.py           # 필터 레지스트리 (median, wiener, nlm, bilateral, fft_notch, gamma, histeq, deblur, unsharp 등)
+├── pipeline.py          # 파이프라인 러너 (설정 기반 순차 실행)
+├── degradation.py       # 열화 모듈 (기본 + NTSC)
+├── evaluation.py        # 평가 유틸리티 (PSNR/SSIM, 비교 이미지, 히스토그램)
+└── ntsc_plugin.py       # zhuker/ntsc 카피 (ringPattern.npy 포함)
 ```
 
-### 3.2 Phase 0: 인위 열화 함수 구현 ✅
+### 3.2 파이프라인 아키텍처
 
-**완료 상태**: 100% 구현
+```
+┌─────────────┐    ┌──────────────┐    ┌───────────────────┐    ┌──────────────┐
+│  입력 영상   │───→│  열화 (NTSC  │───→│  모듈식 필터       │───→│  평가         │
+│ (Clean/DVR) │    │  + 기본)     │    │  PipelineConfig   │    │ PSNR/SSIM    │
+└─────────────┘    └──────────────┘    └───────────────────┘    └──────────────┘
+                                              │
+                                     ┌────────┴────────┐
+                                     │  FilterConfig 1  │
+                                     │  FilterConfig 2  │
+                                     │  FilterConfig N  │
+                                     └─────────────────┘
+```
 
-- `add_gaussian_noise()`: 정규분포 잡음 추가
-- `add_impulse_noise()`: Salt & Pepper 잡음 추가  
-- `add_color_bias()`: RGB 채널별 gain 조절
-- `reduce_brightness()`: 감마 값을 통한 밝기/대비 저하
-- `add_periodic_noise()`: 주기적 잡음 (사인파 오버레이)
-- `degrade_image()`: 종합 열화 함수 (모든 효과 누적 적용)
+### 3.3 PipelineConfig (필터 모듈화)
 
-### 3.3 Phase 1: 잡음 제거 ✅
+각 필터는 `FilterConfig(name, enabled, params)`로 독립적으로 제어:
 
-**완료 상태**: 100% 구현 + 성능 비교
+```python
+cfg = PipelineConfig(label="Wiener Only")
+cfg.add("median", ksize=3)                # ON
+cfg.add("wiener", noise_var=625)          # ON
+cfg.add("fft_notch", enabled=False)       # OFF (주기적 잡음 없을 때)
+cfg.add("channel_correction")
+cfg.add("gamma", gamma=1.8)
+cfg.add("histogram_eq", mode="yuv")
+```
 
-#### 1-A. Impulse 잡음 제거
-- **기법**: 미디언 필터 (Median Filter)
-- **구현**: `cv2.medianBlur()`
-- **파라미터**: 커널 크기 k=3, k=5
-- **적용 시나리오**: Salt & Pepper 잡음
+**Preset 파이프라인**:
+- `PipelineConfig.wiener_only()` — Wiener 중심 (권장)
+- `PipelineConfig.edge_preserving()` — NLM + Wiener (엣지 보존)
+- `PipelineConfig.aggressive()` — 강력한 denoising
+- `PipelineConfig.research_best()` — 모든 고급 기법 조합
 
-#### 1-B. Gaussian 잡음 제거
-- **기법**: 로우패스 필터 + 위너 필터
-- **구현**: 
-  - `cv2.GaussianBlur()` (σ=1.5, 3.0)
-  - 커스텀 위너 필터 (주파수 도메인)
-- **특징**: 잡음 분산 추정 → 역필터링
+### 3.4 필터 레지스트리 (등록된 모든 필터)
 
-#### 1-C. 주기적 잡음 제거
-- **기법**: 2D FFT Notch Filter
-- **구현**: 
-  - FFT 변환 → 노이즈 피크 탐지 → 제거 → IFFT
-  - 노이즈 피크 탐지: percentile-based threshold (99.5%)
-- **적용 시나리오**: Dot crawl, 사선 밴딩, 모터 잡음
-
-### 3.4 Phase 2: 색상 및 대비 보정 ✅
-
-**완료 상태**: 100% 구현 + 성능 비교
-
-#### 2-A. 감마 보정 (Gamma Correction)
-- **수학적 모델**: O = I^(1/γ)
-- **파라미터**: γ=1.5, 2.0
-- **효과**: 전체적인 밝기 조절, 어두운 영역의 디테일 개선
-
-#### 2-B. 로그 연산 (Log Transform)
-- **수학적 모델**: O = c * log(1 + I)
-- **파라미터**: c=40
-- **효과**: 어두운 영역의 대비를 강조
-
-#### 2-C. 히스토그램 평활화 (Histogram Equalization)
-- **구현**: 
-  - 그레이스케일: `cv2.equalizeHist()`
-  - 컬러: YUV 공간에서 Y채널만 평활화
-- **효과**: 좁은 밝기 범위를 전체 범위로 확장
-
-#### 2-D. 채널별 보정 (Channel Correction)
-- **기법**: RGB 각 채널 평균값 분석 → 편향 보정
-- **특징**: 과도한 보정 방지를 위한 scale clamping (0.7-1.3)
-
-### 3.5Phase 3: 보간 (보조 단계)
-
-**상태**: 계획 수립 (구현 예정)
-
-- 선형 보간법 (Bilinear)
-- 3차 보간법 (Bicubic)
-- 시간적 보간 (Temporal, 인접 프레임 활용)
-
-### 3.6 Phase 4: 실제 Footage 적용
-
-**상태**: 계획 수립 (구현 예정)
-
-- 프레임 상태 진단 (잡음 강도 → 필터 선택 로직)
-- Phase 1-2 파이프라인 실제 DVR 프레임에 적용
-- 전/후 시각 비교 + 히스토그램 비교 정리
+| 필터명 | 설명 | 파라미터 |
+|--------|------|----------|
+| median | 미디언 필터 (impulse 잡음) | ksize=3 |
+| gaussian_lowpass | 가우시안 로우패스 (참고용, 권장 X) | sigma=1.5 |
+| **wiener** | **위너 필터 (주파수 도메인, 권장)** | noise_var=625 |
+| nlm | Non-Local Means (엣지 보존 탁월) | h=10, template=7, search=21 |
+| bilateral | Bilateral Filter (엣지 보존 평활화) | d=9, sigma_color=75 |
+| fft_notch | FFT 노치 필터 (주기적 잡음) | threshold=99.5% |
+| gamma | 감마 보정 | gamma=1.8 |
+| log_transform | 로그 변환 | c=40 |
+| histogram_eq | 히스토그램 평활화 (YUV) | mode="yuv" |
+| histogram_eq_clahe | CLAHE (적응형 평활화) | clip_limit=2.0 |
+| channel_correction | RGB 채널 평균 보정 | clamp=0.7~1.3 |
+| **unsharp_mask** | **언샤프 마스크 (블러 복원)** | strength=1.0, radius=1.0 |
+| **deblur_wiener** | **위너 디컨볼루션 (디블러)** | kernel_size=5, noise_var=0.01 |
 
 ---
 
-## 4. 🎯 최적 파이프라인 조합
+## 4. 🎯 개선 사항 (v1.0 → v2.0)
 
-**현재까지 확인된 최적 조합**:
-```
-Median Filter (k=3) → Wiener Filter → FFT Notch → Channel Correction → Gamma (1.8) → Histogram Equalization (YUV)
-```
-
-**이유**:
-1. Median 필터로 impulse 잡음 먼저 제거
-2. Wiener 필터로 Gaussian 잡음과 residual noise 제거
-3. FFT Notch로 주기적 잡음(스캔라인, 모터 잡음) 제거
-4. Channel correction으로 RGB 불균형 보정
-5. Gamma correction으로 전체 밝기/대비 개선
-6. Histogram equalization으로 최종 대비 최적화
+| 항목 | v1.0 | v2.0 | 효과 |
+|------|------|------|------|
+| **NTSC 열화** | 기본 합성 잡음만 | zhuker/ntsc 통합 | 실제 아날로그 아티팩트 재현 |
+| **가우시안 LP + 위너** | 둘 다 사용 | 위너만 사용 | 불필요한 블러 제거 |
+| **필터 모듈화** | 하드코딩 | PipelineConfig | ON/OFF 및 파라미터 조절 |
+| **디블러/블러 최소화** | 없음 | Unsharp Mask + Wiener Deconv | 복원 영상의 선명도 향상 |
+| **추가 연구 방법** | median, wiener, gauss | +NLM, Bilateral, CLAHE, Deblur | 더 다양한 방법 비교 가능 |
+| **비디오 평가** | 기본 파이프라인만 | 다중 파이프라인 비교 (Wiener, Edge, Research) | 정량/정성 평가 모두 가능 |
+| **코드 구조** | 단일 파일 2개 (717줄) | 모듈식 패키지 (8개 파일) | 유지보수성 향상 |
 
 ---
 
 ## 5. 📈 평가 계획
 
-### 5.1 평가 방법
+### 5.1 정량적 평가 (Quantitative)
+- **대상**: Google Photos 샘플 (1분) / 합성 테스트 영상
+- **지표**: PSNR, SSIM
+- **비교**: 각 파이프라인별 프레임 평균 PSNR/SSIM
+- **실행**: `python scripts/run_evaluation.py --quantitative <video>`
 
-| 평가 대상 | 방법 | 평가 지표 |
-|-----------|------|------------|
-| 인위 열화 영상 | 정량 평가 | PSNR, SSIM |
-| 실제 DVR 영상 | 정성 평가 | 시각적 비교, 히스토그램 |
-| 전체 시스템 | 보조 평가 | 히스토그램 전/후 비교 |
-
-### 5.2 비교 매트릭스
-
-#### 잡음 제거 방법 비교
-- 미디언 vs 로우패스 vs 위너 (각 시나리오별)
-- 커널 크기/파라미터 변화에 따른 성능 변동 분석
-
-#### 대비 보정 방법 비교
-- 감마 vs 로그 vs 히스토그램 평활화
-- 채널별 보정과 일반 보정 비교
-
-#### 조합 효과 분석
-- 개별 적용 vs 최적 조합 파이프라인
-- 각 단계의 기여도 분석
+### 5.2 정성적 평가 (Qualitative)
+- **대상**: Google Drive 샘플 (1분) / 실제 DVR 영상
+- **방법**: 처리 전/후 이미지 나란히 비교 (4-way comparison)
+- **분석**: NTSC 아티팩트 제거율, 색상 자연스러움, 엣지 보존 정도
+- **실행**: `python scripts/run_evaluation.py --qualitative <video>`
 
 ---
 
-## 6. 📋 산출물 체크리스트
+## 6. 📋 실행 방법
 
-### 6.1 소스 코드
-- ✅ `main.py` - 메인 진입점
-- ✅ `scripts/pipeline.py` - Phase 0-2 정적 이미지 파이프라인 (435 라인)
-- ✅ `scripts/video_pipeline.py` - 비디오 기반 파이프라인 (282 라인)
+```bash
+# 정적 이미지 파이프라인 (기본)
+python main.py
 
-### 6.2 실험 데이터
-- ✅ 합성 테스트 이미지 5종 (`input/`)
-- ✅ 인위 열화 적용 이미지 (`output/`)
+# 비디오 파이프라인
+python main.py --video
 
-### 6.3 처리 결과
-- ✅ 잡음 제거 결과 이미지 (15종 × 4단계 = 60장)
-- ✅ 색상/대비 보정 결과 이미지 (15종 × 5단계 = 75장)
-- ✅ 전체 파이프라인 적용 결과 (5종)
-- ✅ 전/후 비교 이미지 (3장씩 나란히)
+# 필터 목록 확인
+python main.py --list-filters
 
-### 6.4 히스토그램 분석
-- ✅ 처리 전/후 히스토그램 비교 (모든 단계)
-- ✅ 밝기 분포 변화 분석
+# 정량적 평가 (비디오 필요)
+python scripts/run_evaluation.py --quantitative /path/to/video.mp4
 
-### 6.5 비디오 처리
-- ✅ 정적 이미지 기반 비디오 생성 (`output/video_clean.mp4`)
-- ✅ 열화 비디오 (`output/video_degraded.mp4`)
-- ✅ Phase 1 적용 비디오 (`output/video_denoised_p1.mp4`)
-- ✅ 전체 파이프라인 적용 비디오 (`output/video_full_pipeline.mp4`)
-- ✅ 대표 프레임 비교 이미지 (3장)
-
-### 6.6 평가 결과
-- ⏳ PSNR/SSIM 수치표 (생성 예정)
-- ⏳ 최종 보고서 (작성 예정)
+# 정성적 평가 (비디오 필요)
+python scripts/run_evaluation.py --qualitative /path/to/video.mp4
+```
 
 ---
 
-## 7. 📅 일정 (Milestone)
+## 7. 📚 참고 자료
 
-| 주차 | 내용 | 상태 |
-|------|------|------|
-| **W1** | Phase 0 완료: 데이터 준비 + 열화 함수 구현 | ✅ **완료** |
-| **W2** | Phase 1 완료: 잡음 제거 필터 구현·비교 | ✅ **완료** |
-| **W3** | Phase 2 완료: 색상/대비 보정 구현·비교 | ✅ **완료** |
-| **W4** | Phase 3-4: 보간 + 실제 footage 적용 + 평가 | 🟡 **진행 중** |
-| **W5** | 산출물 정리 + 최종 보고서 작성 | ⏳ **예정** |
+### 외부 라이브러리
+- [NTSC 시뮬레이터 (zhuker/ntsc)](https://github.com/zhuker/ntsc) — 아날로그 비디오 시뮬레이션 (v2.0 통합)
+- [Composite Video Simulator](https://github.com/joncampbell123/composite-video-simulator) — 원본 Java 구현
 
-**현재 진행률**: 80% (Phase 0-2 완료, Phase 3-4 진행 중)
-
----
-
-## 8. 🎉 기대 효과
-
-### 8.1 기술적 성과
-- ✅ 저화질 영상에서 발생하는 잡음, 색상 왜곡, 밝기 및 대비 문제를 **기본적인 영상처리 기법으로 완화**
-- ✅ 깨끗한 디지털 영상에 열화를 추가한 실험 데이터와 실제 아날로그 FPV DVR footage를 **함께 사용**
-- ✅ 정량 평가(PSNR/SSIM)와 실제 적용 사례를 **모두 제시**
-
-### 8.2 파이프라인 효과 확인
-- ✅ 미디언 필터, 로우패스 필터, 위너 필터의 **잡음 제거 효과**
-- ✅ 감마 보정, 로그 연산, 히스토그램 평활화의 **대비 개선 효과**
-- ✅ 채널별 보정의 **색상 왜곡 완화 효과**
-- ✅ FFT notch 필터의 **주기적 잡음 제거 효과**
-
-### 8.3 한계점 및 개선 방향
-- ⚠️ **단순 영상 처리만으로는 신호 손실로 사라진 정보는 복원 불가**
-- ⚠️ **실시간 처리는 현재 구현되지 않음** (오프라인 배치 처리만 지원)
-- ⚠️ **심층학습 기반 방법보다 성능이 낮을 수 있음** (하지만 계산 비용이 훨씬 낮음)
-
----
-
-## 9. 📚 참고 자료
-
-### 9.1 기술 참조
-- [NTSC 시뮬레이터](https://github.com/zhuker/ntsc) - 아날로그 비디오 시뮬레이션
-- [Composite Video Simulator](https://github.com/joncampbell123/composite-video-simulator) - 컴포지트 비디오 아티팩트 시뮬
-- [AV Artifact Atlas](https://www.avartifactatlas.com/tags.html#video) - 비디오 아티팩트 분류
-
-### 9.2 이론적 배경
-- [Image Noise (Wikipedia)](https://en.wikipedia.org/wiki/Noise_(video)) - 잡음 유형 정의
-- [Video Denoising (Wikipedia)](https://en.wikipedia.org/wiki/Video_denoising) - 디노이징 이론
-- [VBM3D 구현](https://github.com/tehret/vbm3d) - 고급 디노이징 알고리즘
-
-### 9.3 FPV 아날로그 비디오 관련
-- [AHD cameras (Reddit)](https://www.reddit.com/r/fpv/comments/) - 아날로그 고선명 카메라
-- [FPV Drone Technology Guide](https://calbryant.uk/) - FPV 드론 기술 가이드
-
----
-
-## 10. 🏆 최종 결과물
-
-### 10.1 소프트웨어
-- ** GitHub Repository**: [smu_sig_prossessing](https://github.com/)
-- **주요 스크립트**: `pipeline.py`, `video_pipeline.py`
-- **총 코드 라인**: 717 라인 (주석 제외)
-
-### 10.2 데이터 및 결과
-- **입력 데이터**: 5종 합성 이미지 + 실제 DVR 영상
-- **출력 결과**: 200+개 처리 결과 이미지 + 4개 비디오 파일
-- **평가 지표**: PSNR/SSIM 수치 + 시각적 비교
-
-### 10.3 문서
-- ✅ 프로젝트 계획서 (`Project_plan.md`)
-- ✅ 구현 계획서 (`Implementation_Plan.md`)
-- ⏳ 중간 보고서 (`mid-project_report.md`) - **본 문서 작성 중**
-- ⏳ 최종 보고서 - **작성 예정**
-
----
-
-*Generated by Mistral Vibe. Co-Authored-By: Mistral Vibe <vibe@mistral.ai>*
+### 추가 연구 기법
+- [Non-Local Means Denoising (OpenCV)](https://docs.opencv.org/master/d5/d69/tutorial_py_non_local_means.html)
+- [Bilateral Filter (OpenCV)](https://docs.opencv.org/master/d4/d86/group__imgproc__filter.html)
+- [CLAHE (Contrast Limited Adaptive Histogram Equalization)](https://docs.opencv.org/master/d5/daf/tutorial_py_histogram_equalization.html)
+- [Wiener Deconvolution (Wikipedia)](https://en.wikipedia.org/wiki/Wiener_deconvolution)
