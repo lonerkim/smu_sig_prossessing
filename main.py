@@ -4,11 +4,13 @@
 
 Flow:
   input (origin) → degrade → output/raw/ (degraded) → pipeline → output/processed/ (restored)
+                                     ↕
+              output/*_comparison.png (origin | degraded | restored)
 
 Usage:
     python main.py -p "input/*.jpg" --preset wiener-only
     python main.py -p "input/digital_whoop_footage.mp4" --preset edge-preserving --degrade ntsc-heavy
-    python main.py -p "input/*.{jpg,png,mp4}" --preset research-best
+    python main.py -p "input/*.{jpg,png,mp4}" --preset research-best --strength 0.7
     python main.py --list-filters
 """
 from __future__ import annotations
@@ -37,12 +39,12 @@ PRESETS: dict[str, PipelineConfig] = {
 
 # ─── Degrade modes ──────────────────────────────────────────────────
 
-DEGRADE_MODES: dict[str, dict] = {
-    "none":       {"use_ntsc": False, "label": "no degradation"},
-    "basic":      {"use_ntsc": False, "label": "basic synthetic noise"},
-    "ntsc-light": {"use_ntsc": True,  "ntsc_intensity": "light",  "label": "NTSC light"},
-    "ntsc-medium":{"use_ntsc": True,  "ntsc_intensity": "medium", "label": "NTSC medium"},
-    "ntsc-heavy": {"use_ntsc": True,  "ntsc_intensity": "heavy",  "label": "NTSC heavy"},
+DEGRADE_MODES: dict[str, str] = {
+    "none": "none",
+    "basic": "basic",
+    "ntsc-light": "ntsc-light",
+    "ntsc-medium": "ntsc-medium",
+    "ntsc-heavy": "ntsc-heavy",
 }
 
 IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
@@ -51,6 +53,7 @@ VIDEO_EXTS = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
 BASE = os.path.dirname(os.path.abspath(__file__))
 OUT_RAW = os.path.join(BASE, "output", "raw")
 OUT_PROC = os.path.join(BASE, "output", "processed")
+OUT_CMP = os.path.join(BASE, "output")
 
 
 # ─── File discovery ─────────────────────────────────────────────────
@@ -70,7 +73,6 @@ def resolve_files(pattern: str) -> list[str]:
 
 
 def classify_file(path: str) -> str | None:
-    """Return 'image', 'video', or None."""
     ext = os.path.splitext(path)[1].lower()
     if ext in IMAGE_EXTS:
         return "image"
@@ -79,39 +81,77 @@ def classify_file(path: str) -> str | None:
     return None
 
 
-# ─── Processing ─────────────────────────────────────────────────────
+# ─── Degrade helper ─────────────────────────────────────────────────
 
-def make_degraded(origin: np.ndarray, mode: str) -> np.ndarray:
-    """Apply degradation to an original image."""
-    params = {k: v for k, v in DEGRADE_MODES[mode].items() if k != "label"}
+def make_degraded(origin: np.ndarray, mode: str, strength: float) -> np.ndarray:
+    """Apply degradation to an original. strength (0-1) scales 'basic' noise."""
     if mode == "none":
         return origin.copy()
-    return degrade_image(origin, **params)
+    if mode.startswith("ntsc"):
+        intensity = mode.split("-")[1]  # light, medium, heavy
+        return degrade_image(origin, use_ntsc=True, ntsc_intensity=intensity)
+    # basic
+    return degrade_image(origin, use_ntsc=False, strength=strength)
 
 
-def process_image(path: str, cfg: PipelineConfig, degrade_mode: str) -> None:
+def save_comparison(origin: np.ndarray, degraded: np.ndarray,
+                    restored: np.ndarray, path: str) -> str:
+    """Side-by-side: origin | degraded | restored with labels."""
+    h, w = origin.shape[:2]
+    # Downscale if too wide for comparison
+    total_w = w * 3
+    if total_w > 3000:
+        scale = 3000 / total_w
+        h, w = int(h * scale), int(w * scale)
+        origin = cv2.resize(origin, (w, h))
+        degraded = cv2.resize(degraded, (w, h))
+        restored = cv2.resize(restored, (w, h))
+
+    canvas = np.zeros((h + 40, w * 3, 3), dtype=np.uint8)  # +40 for label area
+    canvas[:h, :w] = cv2.resize(origin, (w, h))
+    canvas[:h, w:2*w] = cv2.resize(degraded, (w, h))
+    canvas[:h, 2*w:3*w] = cv2.resize(restored, (w, h))
+
+    for i, lbl in enumerate(["Original", "Degraded", "Restored"]):
+        cv2.putText(canvas, lbl, (i * w + 10, h + 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    cv2.imwrite(path, canvas)
+    return path
+
+
+# ─── Processing ─────────────────────────────────────────────────────
+
+def process_image(path: str, cfg: PipelineConfig,
+                  degrade_mode: str, strength: float) -> None:
     origin = cv2.imread(path)
     if origin is None:
         print(f"  ⚠ Cannot read: {path}")
         return
     name = os.path.splitext(os.path.basename(path))[0]
 
-    # 1) Degrade → save to raw/
-    degraded = make_degraded(origin, degrade_mode)
-    out_raw = os.path.join(OUT_RAW, f"{name}.png")
-    cv2.imwrite(out_raw, degraded)
+    # 1) Degrade → raw/
+    degraded = make_degraded(origin, degrade_mode, strength)
+    cv2.imwrite(os.path.join(OUT_RAW, f"{name}.png"), degraded)
 
-    # 2) Pipeline → save to processed/
+    # 2) Pipeline → processed/
     restored = pl.apply_pipeline(degraded, cfg)
-    out_proc = os.path.join(OUT_PROC, f"{name}.png")
-    cv2.imwrite(out_proc, restored)
+    cv2.imwrite(os.path.join(OUT_PROC, f"{name}.png"), restored)
+
+    # 3) Side-by-side comparison
+    cmp_path = os.path.join(OUT_CMP, f"{name}_comparison.png")
+    save_comparison(origin, degraded, restored, cmp_path)
 
     h, w = origin.shape[:2]
-    print(f"  ✅ {name:30s}  {w}x{h}  degraded → {out_raw}")
-    print(f"  {'':33s} restored → {out_proc}")
+    print(f"  ✅ {name:30s}  {w}x{h}")
+    print(f"      degraded → {os.path.join(OUT_RAW, f'{name}.png')}")
+    print(f"      restored → {os.path.join(OUT_PROC, f'{name}.png')}")
+    print(f"      compare  → {cmp_path}")
 
 
-def process_video(path: str, cfg: PipelineConfig, degrade_mode: str) -> None:
+def process_video(path: str, cfg: PipelineConfig,
+                  degrade_mode: str, strength: float) -> None:
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
         print(f"  ⚠ Cannot open: {path}")
@@ -129,17 +169,20 @@ def process_video(path: str, cfg: PipelineConfig, degrade_mode: str) -> None:
     raw_writer = cv2.VideoWriter(raw_path, fourcc, fps, (w, h))
     proc_writer = cv2.VideoWriter(proc_path, fourcc, fps, (w, h))
 
+    # Save first-frame comparison
+    first_origin = None
+
     count = 0
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+        if first_origin is None:
+            first_origin = frame.copy()
 
-        # Degrade → write to raw
-        degraded = make_degraded(frame, degrade_mode)
+        degraded = make_degraded(frame, degrade_mode, strength)
         raw_writer.write(degraded)
 
-        # Pipeline → write to processed
         restored = pl.apply_pipeline(degraded, cfg)
         proc_writer.write(restored)
 
@@ -151,8 +194,18 @@ def process_video(path: str, cfg: PipelineConfig, degrade_mode: str) -> None:
     raw_writer.release()
     proc_writer.release()
     cap.release()
-    print(f"  ✅ {name:30s}  {w}x{h}  {count}frames  degraded → {raw_path}")
-    print(f"  {'':33s} restored → {proc_path}")
+
+    # Comparison from first frame
+    if first_origin is not None:
+        d0 = make_degraded(first_origin, degrade_mode, strength)
+        r0 = pl.apply_pipeline(d0, cfg)
+        cmp_path = os.path.join(OUT_CMP, f"{name}_comparison.png")
+        save_comparison(first_origin, d0, r0, cmp_path)
+        print(f"      compare  → {cmp_path}")
+
+    print(f"  ✅ {name:30s}  {w}x{h}  {count}frames")
+    print(f"      degraded → {raw_path}")
+    print(f"      restored → {proc_path}")
 
 
 # ─── Main ───────────────────────────────────────────────────────────
@@ -163,9 +216,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "예제:\n"
-            "  python main.py -p \"input/*.jpg\" --preset wiener-only\n"
+            "  python main.py -p \"input/*.jpg\" --preset wiener-only --strength 0.5\n"
             "  python main.py -p \"input/digital_whoop_footage.mp4\" --preset edge-preserving --degrade ntsc-heavy\n"
-            "  python main.py -p \"input/*.{jpg,png,mp4}\" --preset research-best\n"
+            "  python main.py -p \"input/*.{jpg,png,mp4}\" --preset research-best --strength 0.7\n"
             "  python main.py -p \"input/*\" --preset aggressive\n"
             "  python main.py --list-filters\n"
         )
@@ -175,9 +228,12 @@ def main():
     parser.add_argument("--preset", type=str, default="wiener-only",
                         choices=list(PRESETS.keys()),
                         help="Pipeline preset to apply (default: wiener-only)")
-    parser.add_argument("--degrade", type=str, default="ntsc-medium",
+    parser.add_argument("--degrade", type=str, default="basic",
                         choices=list(DEGRADE_MODES.keys()),
-                        help="Degradation mode applied to origin before pipeline (default: ntsc-medium)")
+                        help="Degradation type (default: basic)")
+    parser.add_argument("--strength", type=float, default=0.5,
+                        help="Degradation strength 0.0–1.0 for 'basic' mode (default: 0.5). "
+                             "Higher = more noise, darker, harder to restore.")
     parser.add_argument("--list-filters", action="store_true",
                         help="Show all available filters and exit")
 
@@ -192,6 +248,8 @@ def main():
         parser.print_help()
         print("\n  ⚠  Use -p to specify input files or --list-filters to see available filters.")
         return
+
+    args.strength = np.clip(args.strength, 0.0, 1.0)
 
     # Resolve files
     files = resolve_files(args.path)
@@ -217,21 +275,22 @@ def main():
     os.makedirs(OUT_PROC, exist_ok=True)
 
     cfg = PRESETS[args.preset]
-    degrade_label = DEGRADE_MODES[args.degrade]["label"]
 
     print(f"\n🔧 Preset:     {cfg.label}")
     print(f"   Filters:    {' → '.join(s.name for s in cfg.stages if s.enabled)}")
-    print(f"   Degrade:    {degrade_label} ({args.degrade})")
+    print(f"   Degrade:    {args.degrade}  (strength={args.strength:.1f})")
     print(f"   Input:      {len(files)} file(s) ({len(images)} image, {len(videos)} video)")
-    print(f"   Output raw: {OUT_RAW}/  (degraded — after noise injection)")
-    print(f"   Output proc:{OUT_PROC}/  (restored — after pipeline)")
+    print(f"   Output:")
+    print(f"      raw/       = degraded (after noise injection)")
+    print(f"      processed/ = restored (after pipeline)")
+    print(f"      *_comparison.png = origin | degraded | restored")
     print()
 
     for f in images:
-        process_image(f, cfg, args.degrade)
+        process_image(f, cfg, args.degrade, args.strength)
 
     for f in videos:
-        process_video(f, cfg, args.degrade)
+        process_video(f, cfg, args.degrade, args.strength)
 
     print(f"\n✅ Done — {len(images) + len(videos)} file(s) processed.")
 

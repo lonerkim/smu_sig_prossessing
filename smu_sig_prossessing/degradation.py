@@ -163,36 +163,46 @@ def _create_ntsc(intensity: str, seed: int | None) -> Ntsc:
 
 def degrade_image(img: np.ndarray, use_ntsc: bool = False,
                   ntsc_intensity: str = "medium",
-                  sigma: float = 25,
-                  impulse_prob: float = 0.03,
-                  color_r: float = 1.3, color_g: float = 0.7,
-                  color_b: float = 1.1,
-                  brightness_gamma: float = 0.5,
+                  strength: float = 0.5,
+                  sigma: float | None = None,
+                  impulse_prob: float | None = None,
+                  color_r: float | None = None, color_g: float | None = None,
+                  color_b: float | None = None,
+                  brightness_gamma: float | None = None,
                   periodic_freq: float = 25,
-                  periodic_amp: float = 30) -> np.ndarray:
+                  periodic_amp: float | None = None) -> np.ndarray:
     """
-    Composite degradation — stack multiple noise sources.
+    Composite degradation — stack multiple noise sources scaled by strength.
 
     Parameters
     ----------
     img : clean image
     use_ntsc : if True, use NTSC emulation instead of basic noise
     ntsc_intensity : NTSC artifact intensity
-    Other params : basic noise parameters
-
-    Returns
-    -------
-    degraded image
+    strength : float 0.0–1.0 — scales ALL noise parameters linearly.
+               0.0 = no noise, 0.5 = moderate (default), 1.0 = extreme.
+               Individual params override the scaled value when explicitly set.
+    sigma, impulse_prob, etc. : explicit overrides (take precedence over strength)
     """
+    s = np.clip(strength, 0.0, 1.0)
     d = img.copy()
 
     if use_ntsc:
         d = add_ntsc_noise(d, intensity=ntsc_intensity)
     else:
-        d = add_gaussian_noise(d, sigma=sigma)
-        d = add_impulse_noise(d, prob=impulse_prob)
-        d = add_color_bias(d, r_gain=color_r, g_gain=color_g, b_gain=color_b)
-        d = reduce_brightness(d, gamma_val=brightness_gamma)
-        d = add_periodic_noise(d, freq=periodic_freq, amplitude=periodic_amp)
+        # Scale defaults by strength
+        _sigma = sigma if sigma is not None else s * 30
+        _impulse = impulse_prob if impulse_prob is not None else s * 0.05
+        _r = color_r if color_r is not None else 1.0 + s * 0.35
+        _g = color_g if color_g is not None else 1.0 - s * 0.35
+        _b = color_b if color_b is not None else 1.0 + s * 0.15
+        _gamma = brightness_gamma if brightness_gamma is not None else 1.0 - s * 0.55
+        _period_amp = periodic_amp if periodic_amp is not None else s * 50
+
+        d = add_gaussian_noise(d, sigma=_sigma)
+        d = add_impulse_noise(d, prob=_impulse)
+        d = add_color_bias(d, r_gain=_r, g_gain=_g, b_gain=_b)
+        d = reduce_brightness(d, gamma_val=max(0.1, _gamma))
+        d = add_periodic_noise(d, freq=periodic_freq, amplitude=_period_amp)
 
     return d
