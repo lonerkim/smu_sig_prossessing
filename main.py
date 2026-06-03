@@ -36,6 +36,13 @@ PRESETS: dict[str, PipelineConfig] = {
     "nlm-denoise": PipelineConfig.nlm_denoise(),
     "wiener-denoise": PipelineConfig.wiener_denoise(),
     "wavelet-denoise": PipelineConfig.wavelet_denoise(),
+    "guided-denoise": PipelineConfig.guided_denoise(),
+    "tv-denoise": PipelineConfig.tv_denoise_preset(),
+    "aniso-denoise": PipelineConfig.aniso_denoise(),
+    "dct-denoise": PipelineConfig.dct_denoise(),
+    "st-video": PipelineConfig.spatial_temporal_video(),
+    "optimized-fast": PipelineConfig.optimized_fast(),
+    "optimized-quality": PipelineConfig.optimized_quality(),
     "aggressive": PipelineConfig.aggressive(),
     "research-best": PipelineConfig.research_best(),
 }
@@ -127,7 +134,7 @@ def save_comparison(origin: np.ndarray, degraded: np.ndarray,
 # ─── Processing ─────────────────────────────────────────────────────
 
 def process_image(path: str, cfg: PipelineConfig,
-                  degrade_mode: str, strength: float) -> None:
+                  degrade_mode: str, strength: float) -> str | None:
     origin = cv2.imread(path)
     if origin is None:
         print(f"  ⚠ Cannot read: {path}")
@@ -152,13 +159,20 @@ def process_image(path: str, cfg: PipelineConfig,
     print(f"      restored → {os.path.join(OUT_PROC, f'{name}.png')}")
     print(f"      compare  → {cmp_path}")
 
+    # Return paths for potential delivery
+    return cmp_path
+
 
 def process_video(path: str, cfg: PipelineConfig,
-                  degrade_mode: str, strength: float) -> None:
+                  degrade_mode: str, strength: float,
+                  sample_frames: int = 0) -> str | None:
+    from smu_sig_prossessing.filters import reset_temporal_state
+    reset_temporal_state()  # reset temporal filters before each video
+
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
         print(f"  ⚠ Cannot open: {path}")
-        return
+        return None
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -166,6 +180,34 @@ def process_video(path: str, cfg: PipelineConfig,
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     name = os.path.splitext(os.path.basename(path))[0]
 
+    if sample_frames > 0:
+        # ── Heuristic sample mode ──────────────────────────────────
+        print(f"\n  📋 SAMPLE MODE: processing first {sample_frames} frame(s)")
+        sample_comparisons = []
+        for f_idx in range(sample_frames):
+            ret, frame = cap.read()
+            if not ret:
+                break
+            degraded = make_degraded(frame, degrade_mode, strength)
+            restored = pl.apply_pipeline(degraded, cfg)
+            # Save individual sample comparison
+            samp_cmp = os.path.join(OUT_CMP, f"{name}_sample_{f_idx:03d}.png")
+            save_comparison(frame, degraded, restored, samp_cmp)
+            sample_comparisons.append(samp_cmp)
+            print(f"    Frame {f_idx}: {samp_cmp}")
+
+        cap.release()
+
+        # Also save a multi-frame grid
+        if len(sample_comparisons) > 1:
+            grid_path = os.path.join(OUT_CMP, f"{name}_sample_grid.png")
+            _save_sample_grid(sample_comparisons, grid_path, (w, h))
+            print(f"    Multi-frame grid → {grid_path}")
+
+        print(f"  ✅ Sample complete — {len(sample_comparisons)} frame(s)")
+        return sample_comparisons[0] if sample_comparisons else None
+
+    # ── Full video mode ────────────────────────────────────────────
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     raw_path = os.path.join(OUT_RAW, f"{name}.mp4")
     proc_path = os.path.join(OUT_PROC, f"{name}.mp4")
@@ -199,6 +241,7 @@ def process_video(path: str, cfg: PipelineConfig,
     cap.release()
 
     # Comparison from first frame
+    cmp_path = None
     if first_origin is not None:
         d0 = make_degraded(first_origin, degrade_mode, strength)
         r0 = pl.apply_pipeline(d0, cfg)
@@ -209,6 +252,42 @@ def process_video(path: str, cfg: PipelineConfig,
     print(f"  ✅ {name:30s}  {w}x{h}  {count}frames")
     print(f"      degraded → {raw_path}")
     print(f"      restored → {proc_path}")
+    return cmp_path
+
+
+def _save_sample_grid(sample_paths: list[str], out_path: str,
+                      frame_size: tuple[int, int]) -> str:
+    """Arrange sample comparison images into a grid."""
+    import math
+    n = len(sample_paths)
+    cols = min(3, n)
+    rows = math.ceil(n / cols)
+    fw, fh = frame_size
+    fw3 = fw * 3
+    # Read first image to get actual comparison image height
+    first_img = cv2.imread(sample_paths[0])
+    if first_img is None:
+        return out_path
+    cmp_h = first_img.shape[0]
+    cell_h = cmp_h + 10
+    canvas = np.zeros((rows * cell_h + 10,
+                       cols * fw3 + 10, 3), dtype=np.uint8)
+
+    for idx, sp in enumerate(sample_paths):
+        r, c = divmod(idx, cols)
+        img = cv2.imread(sp)
+        if img is None:
+            continue
+        h_im = img.shape[0]
+        y0 = r * cell_h + 5
+        x0 = c * fw3 + 5
+        canvas[y0:y0 + h_im, x0:x0 + fw3] = img[:h_im, :fw3]
+        cv2.putText(canvas, f"Frame {idx}",
+                    (x0 + 5, y0 + h_im + 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    cv2.imwrite(out_path, canvas)
+    return out_path
 
 
 # ─── Main ───────────────────────────────────────────────────────────
@@ -239,6 +318,8 @@ def main():
                              "Higher = more noise, darker, harder to restore.")
     parser.add_argument("--list-filters", action="store_true",
                         help="Show all available filters and exit")
+    parser.add_argument("--sample", type=int, default=0, metavar="N",
+                        help="Process only N frames (video) for heuristic preview (default: full)")
 
     args = parser.parse_args()
 
@@ -293,7 +374,7 @@ def main():
         process_image(f, cfg, args.degrade, args.strength)
 
     for f in videos:
-        process_video(f, cfg, args.degrade, args.strength)
+        process_video(f, cfg, args.degrade, args.strength, sample_frames=args.sample)
 
     print(f"\n✅ Done — {len(images) + len(videos)} file(s) processed.")
 

@@ -179,8 +179,12 @@ def _wavelet_channel(channel: np.ndarray, wavelet: str, level: int,
     import numpy as np
 
     coeffs = pywt.wavedec2(channel.astype(np.float64), wavelet, level=level)
-    # Estimate noise sigma from finest-scale coefficients (HH1)
-    sigma = np.median(np.abs(coeffs[-1])) / 0.6745 if coeffs[-1].size > 0 else 10
+    # Estimate noise sigma from finest-scale diagonal details (HH = index 2 in tuple)
+    sigma = 10.0
+    if len(coeffs) > 1 and isinstance(coeffs[-1], tuple) and len(coeffs[-1]) > 2:
+        hh = coeffs[-1][2]
+        if hh.size > 0:
+            sigma = np.median(np.abs(hh)) / 0.6745
     # VisuShrink universal threshold
     threshold = sigma * np.sqrt(2 * np.log(channel.size))
     # Apply thresholding to detail coefficients (skip approximation)
@@ -338,6 +342,267 @@ def _deblur_channel(channel: np.ndarray, ksize: int, noise_var: float) -> np.nda
     result = img_f * wiener
     result = np.fft.ifft2(result)
     return np.clip(np.abs(result), 0, 255).astype(np.uint8)
+
+
+# ─── Phase 4: Advanced Spatial Denoising ──────────────────────────
+
+@register("guided_filter")
+def guided_filter(img: np.ndarray, radius: int = 3, eps: float = 100.0) -> np.ndarray:
+    """
+    Guided filter — edge-preserving smoothing via local linear model.
+    Assumes output = a*I + b in each local window.
+    Acts as an edge-aware blur — smooths flat regions, preserves edges.
+    """
+    guide = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+
+    if len(img.shape) == 3:
+        result = np.zeros_like(img, dtype=np.float32)
+        for c in range(3):
+            result[:, :, c] = _guided_channel(
+                img[:, :, c].astype(np.float32) / 255.0, guide, radius, eps
+            )
+        return np.clip(result * 255, 0, 255).astype(np.uint8)
+    gray = img.astype(np.float32) / 255.0
+    out = _guided_channel(gray, guide, radius, eps)
+    return np.clip(out * 255, 0, 255).astype(np.uint8)
+
+
+def _guided_channel(p: np.ndarray, guide: np.ndarray, r: int, eps: float) -> np.ndarray:
+    """Single-channel guided filter (floating-point, 0–1 range)."""
+    mean_I = cv2.boxFilter(guide, -1, (r, r))
+    mean_P = cv2.boxFilter(p, -1, (r, r))
+    mean_II = cv2.boxFilter(guide * guide, -1, (r, r))
+    mean_IP = cv2.boxFilter(guide * p, -1, (r, r))
+    var_I = mean_II - mean_I * mean_I
+    cov_IP = mean_IP - mean_I * mean_P
+    a = cov_IP / (var_I + eps)
+    b = mean_P - a * mean_I
+    mean_a = cv2.boxFilter(a, -1, (r, r))
+    mean_b = cv2.boxFilter(b, -1, (r, r))
+    return mean_a * guide + mean_b
+
+
+@register("anisotropic_diffusion")
+def anisotropic_diffusion(img: np.ndarray, n_iter: int = 10,
+                          kappa: float = 50.0, gamma: float = 0.25) -> np.ndarray:
+    """
+    Perona-Malik anisotropic diffusion.
+    Edge-stopping function: c = exp(-(∇I/κ)²).
+    Smooths intra-region while preserving edges.
+    """
+    img_f = img.astype(np.float32)
+    if len(img_f.shape) == 3:
+        result = np.zeros_like(img_f)
+        for c in range(3):
+            result[:, :, c] = _aniso_channel(img_f[:, :, c], n_iter, kappa, gamma)
+        return np.clip(result, 0, 255).astype(np.uint8)
+    return np.clip(_aniso_channel(img_f, n_iter, kappa, gamma), 0, 255).astype(np.uint8)
+
+
+def _aniso_channel(ch: np.ndarray, n_iter: int, kappa: float, gamma: float) -> np.ndarray:
+    """Perona-Malik diffusion on a single channel."""
+    for _ in range(n_iter):
+        # Four directional gradients
+        n = np.roll(ch, -1, axis=0) - ch
+        s = np.roll(ch, 1, axis=0) - ch
+        e = np.roll(ch, -1, axis=1) - ch
+        w = np.roll(ch, 1, axis=1) - ch
+        # Edge-stopping (exponential)
+        cN = np.exp(-(n / kappa) ** 2)
+        cS = np.exp(-(s / kappa) ** 2)
+        cE = np.exp(-(e / kappa) ** 2)
+        cW = np.exp(-(w / kappa) ** 2)
+        ch += gamma * (cN * n + cS * s + cE * e + cW * w)
+    return ch
+
+
+@register("tv_denoise")
+def tv_denoise(img: np.ndarray, weight: float = 0.1,
+               max_num_iter: int = 100, eps: float = 2e-4) -> np.ndarray:
+    """
+    Total Variation denoising (ROF model, Chambolle's algorithm).
+    Minimises ∫|∇u| + λ/2·∫(u-f)².
+    Excellent for removing small noise while preserving sharp edges.
+    """
+    from skimage.restoration import denoise_tv_chambolle
+    img_f = img.astype(np.float32) / 255.0
+    result = denoise_tv_chambolle(
+        img_f, weight=weight, max_num_iter=max_num_iter, eps=eps,
+        channel_axis=-1 if len(img.shape) == 3 else None
+    )
+    return np.clip(result * 255, 0, 255).astype(np.uint8)
+
+
+# ─── Phase 5: Patch-based Denoising ───────────────────────────────
+
+@register("patch_collaborative")
+def patch_collaborative(img: np.ndarray, patch_size: int = 8,
+                         h_dct: float = 30.0) -> np.ndarray:
+    """
+    Block DCT denoising — divide image into blocks, DCT, hard-threshold, IDCT.
+    A simplified (and much faster) BM3D-inspired approach.
+
+    patch_size : block size for DCT decomposition (must divide image evenly-ish)
+    h_dct      : DCT domain hard-threshold (higher = stronger denoising)
+    """
+    h, w = img.shape[:2]
+    if len(img.shape) == 3:
+        result = np.zeros_like(img, dtype=np.float32)
+        for c in range(3):
+            result[:, :, c] = _dct_block_denoise(
+                img[:, :, c].astype(np.float32), patch_size, h_dct
+            )
+        return np.clip(result, 0, 255).astype(np.uint8)
+    return np.clip(
+        _dct_block_denoise(img.astype(np.float32), patch_size, h_dct),
+        0, 255
+    ).astype(np.uint8)
+
+
+def _dct_block_denoise(ch: np.ndarray, bs: int, h_dct: float) -> np.ndarray:
+    """Block-wise DCT hard-threshold denoising for a single channel."""
+    h, w = ch.shape
+    # Pad to multiples of bs
+    ph = (bs - h % bs) % bs
+    pw = (bs - w % bs) % bs
+    padded = np.pad(ch, ((0, ph), (0, pw)), mode='reflect')
+
+    out = np.zeros_like(padded)
+    weight = np.zeros_like(padded)
+    for i in range(0, padded.shape[0], bs):
+        for j in range(0, padded.shape[1], bs):
+            block = padded[i:i + bs, j:j + bs].copy()
+            dct_block = cv2.dct(block)
+            # Hard threshold
+            dct_block[np.abs(dct_block) < h_dct] = 0
+            # Count non-zero coefficients for weighting
+            nz = np.count_nonzero(dct_block)
+            recon = cv2.idct(dct_block)
+            out[i:i + bs, j:j + bs] += recon
+            weight[i:i + bs, j:j + bs] += 1.0
+
+    out /= np.maximum(weight, 1e-10)
+    return out[:h, :w]
+
+
+# ─── Phase 6: Temporal (Video) Denoising ─────────────────────────
+
+# Module-level state for temporal filters (reset between videos)
+_temporal_state: dict = {}
+
+
+def reset_temporal_state() -> None:
+    """Reset all temporal filter state (call before processing a new video)."""
+    global _temporal_state
+    _temporal_state = {}
+
+
+@register("temporal_average")
+def temporal_frame_average(img: np.ndarray, n_frames: int = 5,
+                            reset: bool = False) -> np.ndarray:
+    """
+    Sliding-window frame averaging for temporal denoising.
+    Accumulates n_frames then outputs the mean.
+
+    n_frames : number of frames to average (higher = smoother, more ghosting)
+    reset    : set True to reset accumulator mid-stream
+    """
+    if reset:
+        _temporal_state.pop("tavg_acc", None)
+        _temporal_state.pop("tavg_cnt", None)
+
+    key = "tavg"
+    acc = _temporal_state.get(f"{key}_acc", None)
+    cnt = _temporal_state.get(f"{key}_cnt", 0)
+
+    if acc is None:
+        acc = img.astype(np.float32)
+        cnt = 1
+    else:
+        acc += img.astype(np.float32)
+        cnt += 1
+
+    if cnt >= n_frames:
+        result = (acc / cnt).astype(np.uint8)
+        _temporal_state[f"{key}_acc"] = None
+        _temporal_state[f"{key}_cnt"] = 0
+        return result
+    else:
+        _temporal_state[f"{key}_acc"] = acc
+        _temporal_state[f"{key}_cnt"] = cnt
+        return (acc / cnt).astype(np.uint8)
+
+
+@register("temporal_motion")
+def temporal_motion_compensated(img: np.ndarray, strength: float = 0.5,
+                                 flow_pyr_scale: float = 0.5,
+                                 flow_levels: int = 3,
+                                 reset: bool = False) -> np.ndarray:
+    """
+    Motion-compensated temporal denoising using Farneback optical flow.
+    Warps previous denoised frame and blends with current.
+
+    strength          : blend factor (0=current only, 1=warped prev only)
+    flow_pyr_scale    : optical flow pyramid scale
+    flow_levels       : number of pyramid levels
+    reset             : reset motion state mid-stream
+    """
+    if reset:
+        _temporal_state.pop("tmc_prev", None)
+        _temporal_state.pop("tmc_denoised", None)
+
+    prev_gray = _temporal_state.get("tmc_prev")
+    prev_denoised = _temporal_state.get("tmc_denoised")
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    if prev_gray is None:
+        _temporal_state["tmc_prev"] = gray
+        _temporal_state["tmc_denoised"] = img.copy()
+        return img
+
+    # Farneback optical flow
+    flow = cv2.calcOpticalFlowFarneback(
+        prev_gray, gray, None,
+        flow_pyr_scale, flow_levels, 15, 3, 5, 1.2, 0
+    )
+
+    # Warp previous denoised
+    h, w = flow.shape[:2]
+    map_x, map_y = np.meshgrid(np.arange(w), np.arange(h))
+    map_x = (map_x + flow[:, :, 0]).astype(np.float32)
+    map_y = (map_y + flow[:, :, 1]).astype(np.float32)
+    warped = cv2.remap(prev_denoised, map_x, map_y, cv2.INTER_LINEAR)
+
+    # Blend
+    result = cv2.addWeighted(img, 1.0 - strength, warped, strength, 0)
+
+    _temporal_state["tmc_prev"] = gray
+    _temporal_state["tmc_denoised"] = result.copy()
+    return result
+
+
+@register("temporal_spatial")
+def temporal_spatial_denoise(img: np.ndarray, spatial_strength: float = 5.0,
+                              temporal_strength: float = 0.3,
+                              reset: bool = False) -> np.ndarray:
+    """
+    Combined spatio-temporal denoising.
+    Applies mild bilateral spatial denoising + motion-compensated temporal fusion.
+
+    spatial_strength   : sigma for bilateral spatial filter
+    temporal_strength  : blend factor for temporal component
+    reset              : reset temporal state
+    """
+    # Spatial: mild bilateral
+    d = max(3, int(spatial_strength) | 1)  # ensure odd
+    spatial = cv2.bilateralFilter(img, d, spatial_strength, spatial_strength)
+
+    # Temporal: motion-compensated blend
+    temporal = temporal_motion_compensated(img, strength=temporal_strength, reset=reset)
+
+    # Fuse: spatial handles noise, temporal handles flicker
+    return cv2.addWeighted(spatial, 0.6, temporal, 0.4, 0)
 
 
 # ─── List registered filters ─────────────────────────────────────────

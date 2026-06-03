@@ -385,3 +385,101 @@ cfg.add("unsharp_mask", strength=0.3, radius=0.5, threshold=10)
 - [ ] bilateral 파라미터 자동 추정 (sigma_color를 noise level에 따라 조절)
 - [ ] 실제 아날로그 영상(analog_whoop_footage) 정량 평가
 - [ ] temporal denoising (인접 프레임 활용) — VBM3D 등
+
+---
+
+## Iteration 3: Spatio-temporal + 신규 필터 + Ablation 최적화 (2026-06-03)
+
+### 추가된 필터 (v3.0)
+
+| 필터 | 등록일 | 분류 | 설명 |
+|------|--------|------|------|
+| `guided_filter` | v3.0 | Advanced Spatial | Local linear edge-preserving filter (0.07s/frame) |
+| `anisotropic_diffusion` | v3.0 | Advanced Spatial | Perona-Malik iterative edge-preserving diffusion |
+| `tv_denoise` | v3.0 | Advanced Spatial | Total Variation ROF (Chambolle, skimage) |
+| `patch_collaborative` | v3.0 | Patch-based | Block DCT hard-threshold denoising |
+| `temporal_average` | v3.0 | Temporal Video | Sliding multi-frame averaging |
+| `temporal_motion` | v3.0 | Temporal Video | Farneback optical flow motion-compensated denoising |
+| `temporal_spatial` | v3.0 | Temporal Video | Combined bilateral + motion compensation |
+
+### 추가된 Preset (v3.0)
+
+| Preset | 필터 구성 | 용도 |
+|--------|----------|------|
+| `guided-denoise` | guided → channel → unsharp | Edge-preserving 빠른 처리 |
+| `tv-denoise` | tv_denoise → channel → unsharp | Small noise 제거, edge 보존 |
+| `aniso-denoise` | anisotropic_diffusion → channel → unsharp | Iterative edge-preserving |
+| `dct-denoise` | patch_collaborative → channel → unsharp | Block DCT thresholding |
+| `st-video` | temporal_motion → bilateral → guided → channel → unsharp | Spatio-temporal 비디오 |
+| `optimized-fast` | median → bilateral → channel | Ablation 최적화 (NLM 제거) |
+| `optimized-quality` | median → bilateral → wavelet → channel → unsharp | 고품질 융합 |
+
+### Ablation Study 결과 (REAL_WORLD_PICTURE 1600×740, basic degrade strength=0.5)
+
+| Preset | PSNR ↑ | SSIM ↑ | Edge | Time ↓ |
+|--------|--------|--------|------|--------|
+| **edge-preserve** | 18.08 | 0.5503 | 0.90 | 2.09s |
+| **optimized-fast** 🆕 | **19.00** | 0.5463 | 0.83 | **0.12s** |
+| **optimized-quality** 🆕 | 18.83 | 0.5415 | 0.99 | 0.28s |
+| research-best | 17.98 | 0.5480 | 0.90 | 2.27s |
+| wavelet-denoise | 17.85 | 0.4776 | 0.88 | 0.25s |
+| guided-denoise | 17.73 | 0.4857 | 0.90 | 0.14s |
+| aggressive | 17.71 | 0.5286 | 0.73 | 2.30s |
+| tv-denoise | 17.51 | 0.4311 | 1.21 | 0.78s |
+| nlm-denoise | 16.65 | 0.3948 | 1.72 | 1.85s |
+| aniso-denoise | 16.62 | 0.3712 | 1.33 | 2.03s |
+| dct-denoise | 16.38 | 0.3138 | 1.86 | 1.21s |
+| fast-denoise | 16.29 | 0.3447 | 1.78 | 0.05s |
+| wiener-denoise | 13.91 | 0.4771 | 0.92 | 0.68s |
+
+### Filter ON/OFF Ablation (edge-preserve 대상)
+
+| Variant | PSNR | Δ | Time | 발견 |
+|---------|------|---|------|------|
+| full (baseline) | 18.08 | — | 2.09s | |
+| **−NLM** | **18.14** | **+0.06** | **0.08s** 🚀 | **NLM = 완전 중복!** median+bilateral이 noise 제거를 충분히 함 |
+| −median | 16.65 | **−1.43** | 2.02s | median = impulse noise에 필수 |
+| −channel_correction | 16.87 | −1.21 | 2.02s | color correction = 중요 |
+| +bilateral(1.5×) | 18.16 | +0.08 | 2.03s | 강한 bilateral → PSNR 소폭 향상 |
+| +channel_corr(1.5×) | 17.61 | — | **SSIM↑** | wider clamp → SSIM 0.5846 |
+| −unsharp_mask | 18.08 | 0.0 | 1.78s | unsharp = 효과 없음 |
+
+**핵심 발견**: NLM이 edge-preserve에서 median+bilateral과 완전히 중복. NLM 제거 시 PSNR 유지 + 25× 속도 향상.
+
+### NTSC-heavy 테스트 (analog_whoop_footage frame, 854×480)
+
+| Preset | PSNR | SSIM | Time |
+|--------|------|------|------|
+| degraded (baseline) | 28.55 | 0.8762 | — |
+| **wavelet-denoise** 🥇 | **28.13** | **0.8795** | **0.11s** |
+| optimized-quality | 27.26 | 0.8182 | 0.12s |
+| edge-preserve | 26.95 | 0.7825 | 0.83s |
+| tv-denoise | 26.94 | 0.7983 | 0.23s |
+| optimized-fast | 25.50 | 0.6583 | 0.08s |
+| guided-denoise | 24.64 | 0.6911 | 0.05s |
+
+**발견**: wavelet-denoise가 NTSC 아티팩트(dot crawl, chroma noise, ringing) 처리에 최적. SSIM이 degraded보다 **개선됨** (0.8762→0.8795).
+
+### 권장 파이프라인
+
+| 용도 | Preset | 근거 |
+|------|--------|------|
+| **일반 이미지/영상** (synthetic noise) | `optimized-fast` | PSNR 19.00, 0.12s (edge-preserve의 18× 속도) |
+| **실제 아날로그 영상** (NTSC) | `wavelet-denoise` | PSNR 28.13, SSIM 0.8795, 0.11s |
+| **고품질** (edge 보존) | `optimized-quality` | PSNR 18.83, SSIM 0.5415, 0.28s |
+| **실시간** | `fast-denoise` | 0.05s/frame (bilateral only) |
+
+### 신규 도구
+
+- `run_ablation.py` — Batch testing: preset 비교, filter ON/OFF ablation, param tuning.
+  `--presets p1,p2` / `--ablation f1,f2` / `--param-tune filter.param,v1,v2,...`
+  출력: CSV + Markdown report + visual grid (선택).
+
+- `main.py --sample N` — Heuristic sample: 비디오의 첫 N 프레임만 처리하여 preview.
+
+### 바뀐 점
+
+- 23개 필터 (v2.0의 16개 → +7개 신규)
+- 13개 preset (v2.0의 7개 → +6개 신규)
+- `process_video()`에 temporal state reset 추가
+- `reset_temporal_state()` — 비디오 간 temporal filter 상태 초기화
