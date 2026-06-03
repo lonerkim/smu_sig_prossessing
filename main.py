@@ -43,6 +43,7 @@ PRESETS: dict[str, PipelineConfig] = {
     "st-video": PipelineConfig.spatial_temporal_video(),
     "optimized-fast": PipelineConfig.optimized_fast(),
     "optimized-quality": PipelineConfig.optimized_quality(),
+    "max-quality": PipelineConfig.max_quality(),
     "aggressive": PipelineConfig.aggressive(),
     "research-best": PipelineConfig.research_best(),
 }

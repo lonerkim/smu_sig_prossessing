@@ -250,6 +250,19 @@ class PipelineConfig:
         return cfg
 
     @staticmethod
+    def max_quality() -> PipelineConfig:
+        """
+        [NEW] Maximum quality — strong bilateral denoising (σ=150).
+        Best PSNR/SSIM from parameter tuning (PSNR=19.19, SSIM=0.5930).
+        Slower than optimized-fast but highest quality.
+        """
+        cfg = PipelineConfig(label="Max Quality (Bilateral σ=150)")
+        cfg.add("median", ksize=3)
+        cfg.add("bilateral", d=19, sigma_color=150, sigma_space=150)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        return cfg
+
+    @staticmethod
     def aggressive() -> PipelineConfig:
         """
         Strong denoising for very noisy footage.

@@ -49,6 +49,7 @@ ALL_PRESETS: dict[str, PipelineConfig] = {
     "dct-denoise": PipelineConfig.dct_denoise(),
     "optimized-fast": PipelineConfig.optimized_fast(),
     "optimized-quality": PipelineConfig.optimized_quality(),
+    "max-quality": PipelineConfig.max_quality(),
     "aggressive": PipelineConfig.aggressive(),
     "research-best": PipelineConfig.research_best(),
 }
