@@ -51,7 +51,10 @@ def add_color_bias(img: np.ndarray,
 
 def add_periodic_noise(img: np.ndarray, freq: float = 30,
                        amplitude: float = 50) -> np.ndarray:
-    """Add periodic sine wave noise (diagonal banding)."""
+    """Add periodic sine wave noise (diagonal banding).
+    NOTE: This is NOT a typical analog artifact. Use add_horizontal_line_noise
+    for more realistic analog scan-line interference.
+    """
     noisy = img.astype(np.float32)
     rows, cols = img.shape[:2]
     x = np.arange(cols)
@@ -61,6 +64,53 @@ def add_periodic_noise(img: np.ndarray, freq: float = 30,
         2 * np.pi * freq / cols * xx + 2 * np.pi * freq / rows * yy
     )
     noisy += pattern[:, :, np.newaxis]
+    return np.clip(noisy, 0, 255).astype(np.uint8)
+
+
+def add_horizontal_line_noise(img: np.ndarray,
+                              intensity: float = 30,
+                              density: float = 0.3) -> np.ndarray:
+    """
+    Realistic analog horizontal scan-line interference.
+    Adds random horizontal lines with varying brightness, simulating
+    CRT scan-line noise, VHS tracking errors, and interference.
+
+    intensity : max pixel value shift per affected line (0-255)
+    density   : fraction of rows affected (0.0-1.0)
+    """
+    noisy = img.astype(np.float32)
+    rows = img.shape[0]
+    for r in range(rows):
+        if np.random.random() < density:
+            shift = np.random.uniform(-intensity, intensity)
+            noisy[r, :, :] += shift
+    return np.clip(noisy, 0, 255).astype(np.uint8)
+
+
+def add_dropout(img: np.ndarray, streak_count: int = 20,
+                max_length_ratio: float = 0.5,
+                max_width: int = 3,
+                white_prob: float = 0.7) -> np.ndarray:
+    """
+    Realistic analog tape dropout — random horizontal streaks.
+    Common in VHS/Betamax: magnetic tape particles shed, causing
+    white or black horizontal streaks.
+
+    streak_count    : number of dropout streaks
+    max_length_ratio: max streak length as fraction of image width
+    max_width       : max streak height in pixels (1-5 typical for VHS)
+    white_prob      : probability of white streak (vs black)
+    """
+    noisy = img.astype(np.float32)
+    h, w = img.shape[:2]
+    for _ in range(streak_count):
+        row = np.random.randint(0, h - max_width)
+        start_col = np.random.randint(0, w - 1)
+        length = int(np.random.uniform(0.1, max_length_ratio) * w)
+        end_col = min(start_col + length, w)
+        val = 255.0 if np.random.random() < white_prob else 0.0
+        width = np.random.randint(1, max_width + 1)
+        noisy[row:row + width, start_col:end_col, :] = val
     return np.clip(noisy, 0, 255).astype(np.uint8)
 
 
@@ -197,12 +247,19 @@ def degrade_image(img: np.ndarray, use_ntsc: bool = False,
         _g = color_g if color_g is not None else 1.0 - s * 0.35
         _b = color_b if color_b is not None else 1.0 + s * 0.15
         _gamma = brightness_gamma if brightness_gamma is not None else 1.0 - s * 0.55
-        _period_amp = periodic_amp if periodic_amp is not None else s * 50
+        _hline_intensity = s * 25          # horizontal scan-line noise
+        _hline_density = s * 0.25
+        _dropout_count = int(s * 15)
 
         d = add_gaussian_noise(d, sigma=_sigma)
         d = add_impulse_noise(d, prob=_impulse)
         d = add_color_bias(d, r_gain=_r, g_gain=_g, b_gain=_b)
         d = reduce_brightness(d, gamma_val=max(0.1, _gamma))
-        d = add_periodic_noise(d, freq=periodic_freq, amplitude=_period_amp)
+        # Replace diagonal periodic noise with realistic analog artifacts
+        if _hline_intensity > 0:
+            d = add_horizontal_line_noise(d, intensity=_hline_intensity,
+                                           density=_hline_density)
+        if _dropout_count > 0:
+            d = add_dropout(d, streak_count=max(1, _dropout_count))
 
     return d

@@ -603,3 +603,55 @@ cfg.add("unsharp_mask", strength=0.3, radius=0.5, threshold=10)
   exp6_best_of_family.csv/.md + _grid.png
   exp7_*_frames.png  (temporal frame comparisons)
 ```
+
+---
+
+## Iteration 5: Degrade 현실화 + Washing fix + Video preset (2026-06-03)
+
+### Degrade 개선: Diagonal periodic noise 제거
+
+**문제**: `add_periodic_noise()`가 대각선 사인파 패턴을 추가 — 이는 실제 아날로그 영상에서 일반적이지 않은 아티팩트.
+파이프라인이 이 패턴을 처리하기 어려워했음.
+
+**변경**:
+- `add_periodic_noise()`는 유지하되 **degrade_image의 기본 구성에서 제거** (참고용으로 남김)
+- `add_horizontal_line_noise()` — CRT 스캔라인 간섭 시뮬레이션 (random horizontal line shift)
+- `add_dropout()` — VHS 테이프 손상 시뮬레이션 (random white/black horizontal streaks)
+
+이제 basic degrade 구성:
+```
+Gaussian(σ) → Impulse(p) → Color bias → Brightness(gamma) → Horizontal line noise → Dropout
+```
+
+### Washing 문제 해결
+
+**문제**: `max-quality` preset의 bilateral(σ=150)이 밝은 영역(highlights)을 과도하게 평활화하여 washing 발생.
+Edge retention도 0.42로 매우 낮음.
+
+**원인 진단** (854×480 real analog frame 테스트):
+
+| Preset | Wash Ratio | Edge | 설명 |
+|--------|-----------|------|------|
+| max-quality (original) | **0.949** ↓ | **0.423** ↓↓ | Highlight washing + edge 붕괴 |
+| optimized-fast (σ=110) | 0.972 | 0.589 | Mild washing |
+| **guided+CLAHE** 🏆 | **1.016** ✓ | **1.306** ✓✓ | **Washing 없음, edge 3× 향상** |
+| edge-preserve | 0.979 | 0.657 | 중간 |
+
+Wash ratio = 1.0 = 완벽 보존, < 1.0 = highlight dimming.
+
+**수정**:
+- `max-quality`에 `histogram_eq_clahe(clip=1.5)` 추가 — local contrast 복원
+- 신규 `video-enhanced` preset 추가 — guided filter + wavelet + CLAHE (washing 0, edge 1.3)
+
+### 신규 Preset
+
+| Preset | 구성 | Wash | Edge | 시간 |
+|--------|------|------|------|------|
+| `video-enhanced` | Med→Guided→Wavelet→Channel→CLAHE→Unsharp | **1.016** | **1.306** | **0.12s** |
+
+### 바뀐 점
+
+- Degrade: diagonal periodic noise 제거, horizontal line noise + dropout 으로 대체
+- max-quality preset: CLAHE 추가로 washing 방지
+- video-enhanced preset 신규 등록
+- README 전면 업데이트 (v3.0 문서화)

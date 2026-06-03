@@ -44,6 +44,7 @@ PRESETS: dict[str, PipelineConfig] = {
     "optimized-fast": PipelineConfig.optimized_fast(),
     "optimized-quality": PipelineConfig.optimized_quality(),
     "max-quality": PipelineConfig.max_quality(),
+    "video-enhanced": PipelineConfig.video_enhanced(),
     "aggressive": PipelineConfig.aggressive(),
     "research-best": PipelineConfig.research_best(),
 }
