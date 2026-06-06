@@ -188,6 +188,48 @@ python run_ablation.py --degrade ntsc-heavy --presets wavelet-denoise,optimized-
 - **Guided filter**가 bilateral보다 edge 보존 우수 (washing 없음)
 - **필터 순서**: guided→wavelet > wavelet→guided > wavelet→bilateral > bilateral→wavelet
 
+## 자동 정량+정성 평가 (v3.1)
+
+```bash
+# 전체 preset 정량+정성 평가 (7개 메트릭 + Composite Score + 시각화)
+python run_auto_eval.py -i input/test_small.jpg --degrade basic --strength 0.5
+
+# 특정 preset만
+python run_auto_eval.py -i input/test_small.jpg --presets optimized-fast,video-enhanced
+
+# 실제 아날로그 영상
+python run_auto_eval.py -i input/analog_whoop_footage.mp4 --degrade none --sample 3
+
+# 정성 평가 시트만 (메트릭 계산 없이)
+python run_auto_eval.py -i input/test_small.jpg --qualitative-only
+```
+
+### 7개 자동 메트릭
+
+| 메트릭 | 단위 | 방향 | 설명 |
+|--------|------|------|------|
+| PSNR | dB | ↑ | Peak Signal-to-Noise Ratio |
+| SSIM | — | ↑ | Structural Similarity |
+| Color Fidelity | ΔE | ↓ | CIE76 LAB 색차 |
+| Edge Retention | ratio | ↑ | Canny edge 비율 (1.0=원본 동일) |
+| Noise Level | Lap. var | ↓ | Laplacian 분산 |
+| Detail Recovery | ratio | ↑ | 고주파 에너지 보존율 |
+| Artifact Score | score | ↓ | Ringing+blocking+overshooting |
+
+### 산출물
+
+```
+output/eval/
+  auto_eval_{ts}_{name}.csv       — 정량 데이터
+  auto_eval_{ts}_{name}.json      — JSON
+  auto_eval_{ts}_{name}.md        — Markdown 리포트
+  auto_eval_{ts}_{name}_radar.png — Radar chart
+  auto_eval_{ts}_{name}_bar.png   — Bar chart
+  auto_eval_{ts}_{name}_grid.png  — 비교 그리드
+  auto_eval_{ts}_{name}_qual.png  — 정성 평가 시트
+  qualitative_notes_{ts}.md       — 정성 코멘트 템플릿
+```
+
 ## 등록된 필터 (23개)
 
 ```

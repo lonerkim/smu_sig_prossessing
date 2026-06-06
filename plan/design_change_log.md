@@ -655,3 +655,121 @@ Wash ratio = 1.0 = 완벽 보존, < 1.0 = highlight dimming.
 - max-quality preset: CLAHE 추가로 washing 방지
 - video-enhanced preset 신규 등록
 - README 전면 업데이트 (v3.0 문서화)
+
+---
+
+## Iteration 6: 자동 정량+정성 평가 파이프라인 (2026-06-06)
+
+### 추가된 모듈
+
+| 모듈 | 설명 |
+|------|------|
+| `auto_evaluation.py` | 7개 메트릭 자동 산출 + Composite Score |
+| `eval_viz.py` | Radar chart, Bar chart, Comparison grid, 정성 평가 시트 |
+| `run_auto_eval.py` | CLI: preset별 자동 평가 → CSV/JSON/MD + 시각화 |
+
+### 자동 평가 메트릭 (7개)
+
+| # | 메트릭 | 단위 | 방향 | 설명 |
+|---|--------|------|------|------|
+| 1 | PSNR | dB | ↑ | Peak Signal-to-Noise Ratio |
+| 2 | SSIM | — | ↑ | Structural Similarity (luminance) |
+| 3 | Color Fidelity | ΔE | ↓ | CIE76 LAB color difference |
+| 4 | Edge Retention | ratio | ↑ | Canny edge pixel ratio (1.0=원본 동일) |
+| 5 | Noise Level | Lap. var | ↓ | Laplacian variance (낮을수록 깨끗) |
+| 6 | Detail Recovery | ratio | ↑ | 고주파 에너지 보존율 (1.0=완전 보존) |
+| 7 | Artifact Score | score | ↓ | Ringing + blocking + overshoot 감지 |
+
+### Composite Quality Score (0~100)
+
+가중 평균 — 프로젝트 특성에 맞춰 조정 가능:
+
+```
+PSNR × 0.15 + SSIM × 0.20 + Color × 0.15 + Edge × 0.15
++ Noise × 0.15 + Detail × 0.10 + Artifact × 0.10
+```
+
+### 실험 결과
+
+#### test_small.jpg (1600×740, basic degrade strength=0.5)
+
+| # | Preset | Score | PSNR | SSIM | ΔE | Edge | Noise | Detail | Artifact |
+|---|--------|-------|------|------|----|------|-------|--------|----------|
+| 1 | video-enhanced | **52.24** | 20.63 | 0.7346 | 17.79 | 0.656 | **63.8** | 0.828 | 9.01 |
+| 2 | edge-preserve | 45.88 | 18.98 | **0.7652** | 24.50 | 0.561 | 356.9 | **0.841** | 13.97 |
+| 3 | optimized-fast | 45.77 | **19.99** | 0.7416 | 19.22 | 0.403 | 317.9 | 0.777 | 12.48 |
+| 4 | wavelet-denoise | 43.41 | 18.84 | 0.6658 | 23.79 | 0.548 | 213.3 | 0.598 | 14.47 |
+| 5 | fast-denoise | 40.39 | 16.76 | 0.4517 | 28.08 | 2.257 | 11017 | 1.773 | 17.66 |
+
+**핵심 발견**:
+- video-enhanced가 노이즈 제거율 최고 (Lap.var 63.8 vs degraded 10791 = **170× 개선**)
+- edge-preserve의 SSIM 최고 (0.7652) — 구조 보존 우수
+- fast-denoise는 노이즈 제거가 거의 안됨 (Lap.var 11017 ≈ degraded 수준)
+
+#### analog_whoop_footage.mp4 (854×480, degrade=none, 실제 아날로그)
+
+| # | Preset | Score | PSNR | SSIM | ΔE | Edge | Noise | Detail | Artifact |
+|---|--------|-------|------|------|----|------|-------|--------|----------|
+| 1 | fast-denoise | **79.35** | **37.58** | **0.9906** | **3.69** | 0.904 | 271.9 | 0.953 | **2.98** |
+| 2 | wavelet-denoise | 78.63 | 36.69 | 0.9837 | 3.80 | 0.875 | 230.7 | 0.930 | 3.07 |
+| 3 | video-enhanced | 67.63 | 22.85 | 0.8998 | 7.01 | **0.931** | **104.4** | **1.041** | 8.84 |
+| 4 | optimized-fast | 60.56 | 27.10 | 0.7221 | 5.36 | 0.156 | 74.1 | 0.565 | 5.56 |
+
+**핵심 발견**:
+- **실제 아날로그 영상**에서는 fast-denoise/wavelet이 압도적 (PSNR 37+)
+- video-enhanced는 노이즈를 너무 강하게 제거 (detail 손실로 PSNR 하락)
+- 아날로그 영상은 noise level 자체가 낮아 (296 vs 10791), 강한 denoising이 오히려 해로움
+- **용도별 최적**: 실시간=fast-denoise, 고품질=wavelet-denoise, 강노이즈=video-enhanced
+
+### 정성 평가 인터페이스
+
+- `run_auto_eval.py` 실행 시 `qualitative_notes_{ts}.md` 자동 생성
+- 유저가 직접 보고 1~5점 + 코멘트 입력
+- 항목: 색상 / 선명도 / 노이즈 제거 / 전체 인상
+- 종합: 최고/최악 preset, 특이사항
+
+### 사용법
+
+```bash
+# 전체 preset 정량+정성 평가
+python run_auto_eval.py -i input/test_small.jpg --degrade basic --strength 0.5
+
+# 특정 preset만
+python run_auto_eval.py -i input/test_small.jpg --presets optimized-fast,video-enhanced
+
+# 실제 아날로그 영상 (degrade 없이)
+python run_auto_eval.py -i input/analog_whoop_footage.mp4 --degrade none --sample 3
+
+# 정성 평가 시트만
+python run_auto_eval.py -i input/test_small.jpg --qualitative-only
+```
+
+### 산출물
+
+```
+output/eval/
+  auto_eval_{ts}_{name}.csv       — 정량 데이터
+  auto_eval_{ts}_{name}.json      — JSON (프로그래밍 접근)
+  auto_eval_{ts}_{name}.md        — Markdown 리포트
+  auto_eval_{ts}_{name}_radar.png — Radar chart (5축)
+  auto_eval_{ts}_{name}_bar.png   — Bar chart (7메트릭)
+  auto_eval_{ts}_{name}_grid.png  — 비교 그리드
+  auto_eval_{ts}_{name}_qual.png  — 정성 평가 시트
+  qualitative_notes_{ts}_{name}.md — 정성 코멘트 템플릿
+```
+
+### 패키지 구조 업데이트
+
+```
+smu_sig_prossessing/        — 핵심 패키지
+  __init__.py
+  __main__.py               — python -m 진입점 (process/eval/list-filters)
+  config.py                 — PipelineConfig (14개 preset)
+  filters.py                — 필터 레지스트리 (23개 필터)
+  pipeline.py               — 파이프라인 러너
+  degradation.py            — 열화 모듈
+  evaluation.py             — 기존 PSNR/SSIM
+  auto_evaluation.py        — 🆕 자동 7메트릭 + Composite Score
+  eval_viz.py               — 🆕 시각화 (radar/bar/grid/정성시트)
+  ntsc_plugin.py            — NTSC 시뮬레이터
+```
