@@ -773,3 +773,116 @@ smu_sig_prossessing/        — 핵심 패키지
   eval_viz.py               — 🆕 시각화 (radar/bar/grid/정성시트)
   ntsc_plugin.py            — NTSC 시뮬레이터
 ```
+
+---
+
+## v3.1 → v4.0 Iteration 7 (2026-06-06)
+
+### 변경: 실제 아날로그 풋샷 기반 필터 개발 + 아날로그 특화 preset
+
+**배경**: Iteration 6까지 합성 노이즈 기반 평가로 진행.  실제 whoop 드론 아날로그 풋샷 24개(251MB)를 확보해 정성 평가 진행.
+
+#### 정성 평가 결과 (VID00002, VID00006 실제 풋샷)
+
+| preset | 장점 | 단점 |
+|---|---|---|
+| video-enhanced | sharpness 최고 | OSD blur 심함, 비주얼 artifact |
+| optimized-fast | artifact 최소 | blur 심함 |
+| wavelet-denoise | **영상으로 보기 제일 자연스러움** | 색보정 약간 부족 |
+| fast-denoise | 점수는 최고 | 아날로그 특화 아님 |
+
+**공통 미해결 문제**:
+- 세로줄 artifact (수직 주기적 패턴)
+- 깜빡임 (frame-to-frame brightness flicker)
+- 스캔라인 (수평 주기적 라인)
+- 울렁임 (undulation)
+
+#### 노이즈 레벨 분석
+
+```
+파일                               noise (Laplacian var)
+VID00002 seg1 (새)                 5248  ◄ 높음
+VID00002 seg2 (새)                 9023  ◄ 최악
+VID00006 seg1 (새)                 1995  ◄ 중간
+기존 analog_whoop_footage.mp4       296   (너무 깨끗함 — preset 차이 안보임)
+```
+
+### 신규 필터 (Phase 7: Analog Video Specific)
+
+**1. `flicker_stabilize`**
+- EMA 기반 temporal brightness stabilization
+- per-channel mean brightness 추적 → 프레임간 급격한 변화 완화
+- strength (0~1): 보정 강도, window: EMA 윈도우 크기
+- 기본값: strength=0.7, window=10 (0.33s at 30fps)
+
+**2. `scanline_remove`**
+- FFT 기반 수평 scanline 자동 감지 + 제거
+- row-mean brightness → FFT → 주기적 peak 탐지 → bad row interpolation
+- 두 모드: "detect" (자동) / "fixed" (period 지정)
+- blend 파라미터로 원본 대비 대체 비율 조절
+
+**3. `vertical_notch` 개선**
+- robust peak detection: 로커스트 moving average로 baseline 추정 후 peak 탐지
+- 기존 generic fft_notch와 달리 수직 방향(수평 주파수)만 타겟
+- **주의**: 열 전체 zeroing 시 수평 ringing 발생 → narrow band-stop 필요 (추후 개선)
+
+### 신규 Preset
+
+**`analog_clean`** (권장 — analog FPV 기본)
+```
+scanline_remove (detect, blend=0.5)
+flicker_stabilize (strength=0.6, window=10)
+wavelet (db4, level=2, soft)
+bilateral (d=5, σ=20)
+channel_correction (0.85~1.15)
+unsharp_mask (0.15, threshold=8)
+```
+
+**`analog_heavy`** (강노이즈, noise > 5000)
+```
+scanline_remove (fixed period=2, blend=0.6)
+flicker_stabilize (strength=0.8, window=15)
+wavelet (db4, level=3, soft)
+bilateral (d=7, σ=40)
+channel_correction (0.80~1.20)
+unsharp_mask (0.2, threshold=5)
+```
+
+### 처리 성능
+
+| preset | VID00002_seg2 (603 frames) | 속도 |
+|---|---|---|
+| analog-clean | 58.8s | 10.3 fps |
+| analog-heavy | 65.1s | 9.3 fps |
+| wavelet-denoise | 39.3s | 15.3 fps |
+
+### 기타 변경
+
+- `run_auto_eval.py`: `--zip` 플래그 추가 (결과 전체를 ZIP으로 패키징, Telegram 무압축 전송용)
+- `video_enhanced` preset에서 `vertical_notch` 제거 (수평 ringing 문제)
+
+### 패키지 구조 업데이트
+
+```
+smu_sig_prossessing/        — 핵심 패키지
+  __init__.py
+  __main__.py               — python -m 진입점 (process/eval/list-filters)
+  config.py                 — PipelineConfig (16개 preset) ← +2
+  filters.py                — 필터 레지스트리 (25개 필터) ← +2
+  pipeline.py               — 파이프라인 러너
+  degradation.py            — 열화 모듈
+  evaluation.py             — 기존 PSNR/SSIM
+  auto_evaluation.py        — 자동 7메트릭 + Composite Score
+  eval_viz.py               — 시각화 (radar/bar/grid/정성시트)
+  ntsc_plugin.py            — NTSC 시뮬레이터
+
+run_auto_eval.py            — CLI 평가 도구 (--zip 지원)
+```
+
+### 남은 과제
+
+1. **vertical_notch 개선**: narrow band-stop filter로 수평 ringing 방지
+2. **Adaptive pipeline**: artifact detector → filter router (검출 후 필요한 필터만 적용)
+3. **Temporal denoising 고도화**: 현재 EMA 기반 → motion-compensated 고도화
+4. **실제 footage 추가 확보**: 다양한 노이즈 패턴 coverage
+5. **Deinterlace**: NTSC 인터레이스 소스 필요시 추가
