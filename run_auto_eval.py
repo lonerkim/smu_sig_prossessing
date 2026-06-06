@@ -34,6 +34,7 @@ import argparse
 import os
 import sys
 import json
+import zipfile
 from datetime import datetime
 
 import cv2
@@ -92,7 +93,8 @@ def run_evaluation(input_path: str, presets: list[str],
                    degrade_mode: str, strength: float,
                    sample_frames: int = 0,
                    qualitative_only: bool = False,
-                   output_dir: str | None = None):
+                   output_dir: str | None = None,
+                   make_zip: bool = False):
     """Main evaluation runner."""
     out_dir = output_dir or OUT_DIR
     os.makedirs(out_dir, exist_ok=True)
@@ -108,12 +110,34 @@ def run_evaluation(input_path: str, presets: list[str],
         if sample_frames <= 0:
             sample_frames = 5  # default for video eval
         print(f"\n🎬 Video mode — evaluating first {sample_frames} frame(s)")
-        _eval_video(input_path, presets, degrade_mode, strength,
+        files = _eval_video(input_path, presets, degrade_mode, strength,
                     sample_frames, evaluator, out_dir, ts, qualitative_only)
     else:
         print(f"\n🖼️  Image mode — {input_path}")
-        _eval_image(input_path, presets, degrade_mode, strength,
+        files = _eval_image(input_path, presets, degrade_mode, strength,
                     evaluator, out_dir, ts, qualitative_only)
+
+    # ── ZIP packaging ─────────────────────────────────────────────
+    if make_zip and files:
+        zip_path = os.path.join(out_dir, f"auto_eval_{ts}_{_stem(input_path)}.zip")
+        _pack_zip(files, zip_path)
+        return zip_path
+
+    return out_dir
+
+
+def _stem(path: str) -> str:
+    return os.path.splitext(os.path.basename(path))[0]
+
+
+def _pack_zip(file_paths: list[str], zip_path: str):
+    """결과 파일들을 ZIP으로 패키징 (파일 내부 경로는 basename만)."""
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fp in file_paths:
+            if os.path.isfile(fp):
+                zf.write(fp, arcname=os.path.basename(fp))
+    size_mb = os.path.getsize(zip_path) / (1024 * 1024)
+    print(f"\n📦 ZIP → {zip_path} ({size_mb:.1f} MB, {len(file_paths)} files)")
 
 
 def _eval_image(input_path: str, presets: list[str],
@@ -152,8 +176,10 @@ def _eval_image(input_path: str, presets: list[str],
             eval_results.append(r)
         results_images[preset_name] = processed
 
+    generated_files: list[str] = []
+
     if not qual_only and eval_results:
-        _save_reports(eval_results, out_dir, ts, name)
+        generated_files.extend(_save_reports(eval_results, out_dir, ts, name))
 
     # 시각화 (항상 생성)
     print(f"\n📊 Generating visualizations...")
@@ -162,26 +188,33 @@ def _eval_image(input_path: str, presets: list[str],
     grid_path = os.path.join(out_dir, f"auto_eval_{ts}_{name}_grid.png")
     draw_comparison_grid(results_images, origin, grid_path)
     print(f"   Grid → {grid_path}")
+    generated_files.append(grid_path)
 
     # 정성 평가 시트
     qual_path = os.path.join(out_dir, f"auto_eval_{ts}_{name}_qual.png")
     create_eval_sheet(origin, degraded, results_images, qual_path)
     print(f"   Qual → {qual_path}")
+    generated_files.append(qual_path)
 
     # Radar + Bar (정량 결과 있을 때만)
     if eval_results:
         radar_path = os.path.join(out_dir, f"auto_eval_{ts}_{name}_radar.png")
         draw_radar_chart(eval_results, radar_path)
         print(f"   Radar → {radar_path}")
+        generated_files.append(radar_path)
 
         bar_path = os.path.join(out_dir, f"auto_eval_{ts}_{name}_bar.png")
         draw_bar_chart(eval_results, bar_path)
         print(f"   Bar → {bar_path}")
+        generated_files.append(bar_path)
 
     # 정성 코멘트 템플릿 생성
-    _create_qual_template(results_images.keys(), out_dir, name, ts)
+    tmpl = _create_qual_template(results_images.keys(), out_dir, name, ts)
+    if tmpl:
+        generated_files.append(tmpl)
 
     print(f"\n✅ Evaluation complete — {len(presets)} presets")
+    return generated_files
 
 
 def _eval_video(input_path: str, presets: list[str],
@@ -222,50 +255,69 @@ def _eval_video(input_path: str, presets: list[str],
         processed = pl.apply_pipeline(degraded, cfg)
 
         if not qual_only:
-            # degrade none이면 origin=reference, processed=결과
             ref = first_frame if degrade_mode == "none" else first_frame
             r = evaluator.evaluate(ref, processed, label=preset_name,
                                    degraded=degraded, verbose=True)
             eval_results.append(r)
         results_images[preset_name] = processed
 
+    generated_files: list[str] = []
+
     if not qual_only and eval_results:
-        _save_reports(eval_results, out_dir, ts, name)
+        generated_files.extend(_save_reports(eval_results, out_dir, ts, name))
 
     # 시각화
     grid_path = os.path.join(out_dir, f"auto_eval_{ts}_{name}_grid.png")
     draw_comparison_grid(results_images, first_frame, grid_path)
     print(f"   Grid → {grid_path}")
+    generated_files.append(grid_path)
 
     qual_path = os.path.join(out_dir, f"auto_eval_{ts}_{name}_qual.png")
     create_eval_sheet(first_frame, degraded, results_images, qual_path)
     print(f"   Qual → {qual_path}")
+    generated_files.append(qual_path)
 
     if eval_results:
-        draw_radar_chart(eval_results, os.path.join(out_dir, f"auto_eval_{ts}_{name}_radar.png"))
-        draw_bar_chart(eval_results, os.path.join(out_dir, f"auto_eval_{ts}_{name}_bar.png"))
+        radar_path = os.path.join(out_dir, f"auto_eval_{ts}_{name}_radar.png")
+        draw_radar_chart(eval_results, radar_path)
+        print(f"   Radar → {radar_path}")
+        generated_files.append(radar_path)
 
-    _create_qual_template(results_images.keys(), out_dir, name, ts)
+        bar_path = os.path.join(out_dir, f"auto_eval_{ts}_{name}_bar.png")
+        draw_bar_chart(eval_results, bar_path)
+        print(f"   Bar → {bar_path}")
+        generated_files.append(bar_path)
+
+    tmpl = _create_qual_template(results_images.keys(), out_dir, name, ts)
+    if tmpl:
+        generated_files.append(tmpl)
+
     print(f"\n✅ Evaluation complete — {len(presets)} presets")
+    return generated_files
 
 
-def _save_reports(results: list[EvalResult], out_dir: str, ts: str, name: str):
-    """CSV + JSON + Markdown 리포트 저장."""
+def _save_reports(results: list[EvalResult], out_dir: str, ts: str, name: str) -> list[str]:
+    """CSV + JSON + Markdown 리포트 저장. Returns list of generated file paths."""
     # Sort by composite
     results.sort(key=lambda x: x.composite_score, reverse=True)
+    paths: list[str] = []
 
     csv_path = os.path.join(out_dir, f"auto_eval_{ts}_{name}.csv")
     AutoEvaluator.export_csv(results, csv_path)
     print(f"\n   CSV → {csv_path}")
+    paths.append(csv_path)
 
     json_path = os.path.join(out_dir, f"auto_eval_{ts}_{name}.json")
     AutoEvaluator.export_json(results, json_path)
     print(f"   JSON → {json_path}")
+    paths.append(json_path)
 
     md_path = os.path.join(out_dir, f"auto_eval_{ts}_{name}.md")
     AutoEvaluator.export_markdown(results, md_path,
                                   title=f"Auto Evaluation — {name}")
     print(f"   MD → {md_path}")
+    paths.append(md_path)
+    return paths
 
 
 def _create_qual_template(preset_names, out_dir: str, name: str, ts: str):
@@ -314,6 +366,7 @@ def _create_qual_template(preset_names, out_dir: str, name: str, ts: str):
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     print(f"   Qual template → {path}")
+    return path
 
 
 # ─── Main ─────────────────────────────────────────────────────────
@@ -338,6 +391,8 @@ def main():
                         help="Generate only qualitative sheet (no metrics)")
     parser.add_argument("--output", type=str, default=None,
                         help="Output directory (default: output/eval/)")
+    parser.add_argument("--zip", action="store_true",
+                        help="Pack all results into a .zip file")
 
     args = parser.parse_args()
 
@@ -352,7 +407,7 @@ def main():
     else:
         preset_list = list(PRESETS.keys())
 
-    run_evaluation(
+    result = run_evaluation(
         input_path=args.input,
         presets=preset_list,
         degrade_mode=args.degrade,
@@ -360,7 +415,12 @@ def main():
         sample_frames=args.sample,
         qualitative_only=args.qualitative_only,
         output_dir=args.output,
+        make_zip=args.zip,
     )
+
+    # --zip일 경우 결과 zip 경로 출력
+    if args.zip and isinstance(result, str) and result.endswith(".zip"):
+        print(f"\n📎 ZIP ready: {result}")
 
 
 if __name__ == "__main__":

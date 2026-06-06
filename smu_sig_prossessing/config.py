@@ -317,6 +317,49 @@ class PipelineConfig:
         cfg.add("unsharp_mask", strength=0.4, radius=0.5, threshold=5)
         return cfg
 
+    @staticmethod
+    def analog_clean() -> PipelineConfig:
+        """
+        [RECOMMENDED for analog FPV] Wavelet base + analog artifact removal.
+
+        Based on user evaluation of real whoop footage (VID00002/00006):
+          - wavelet chosen as base (best visual quality, least OSD blur)
+          - flicker_stabilize: removes frame-to-frame brightness flicker
+          - scanline_remove: removes periodic horizontal scanline artifacts
+          - gentle bilateral: cleans residual noise without blurring OSD
+          - channel_correction: fixes analog color cast (magenta tint etc.)
+
+        Designed for: 640x480 NTSC analog FPV, 30fps, noise 2000–10000.
+        """
+        cfg = PipelineConfig(label="Analog Clean (Wavelet+Flicker+Scanline)")
+        cfg.add("scanline_remove", mode="detect", blend=0.5)           # horizontal scanlines
+        cfg.add("flicker_stabilize", strength=0.6, window=10)          # brightness flicker
+        cfg.add("wavelet", wavelet="db4", level=2, threshold_mode="soft")  # base denoise
+        cfg.add("bilateral", d=5, sigma_color=20, sigma_space=20)      # residual noise
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)  # color cast
+        cfg.add("unsharp_mask", strength=0.15, radius=0.5, threshold=8)  # mild sharpen
+        return cfg
+
+    @staticmethod
+    def analog_heavy() -> PipelineConfig:
+        """
+        Strong analog cleanup for high-noise footage (noise > 5000).
+
+        Same base as analog_clean but with:
+          - stronger wavelet (level=3)
+          - stronger flicker stabilization
+          - fixed 2-row scanline removal (for confirmed interlaced sources)
+          - stronger bilateral for heavy noise
+        """
+        cfg = PipelineConfig(label="Analog Heavy Noise")
+        cfg.add("scanline_remove", mode="fixed", blend=0.6, period_hint=2)
+        cfg.add("flicker_stabilize", strength=0.8, window=15)
+        cfg.add("wavelet", wavelet="db4", level=3, threshold_mode="soft")
+        cfg.add("bilateral", d=7, sigma_color=40, sigma_space=40)
+        cfg.add("channel_correction", clamp_min=0.80, clamp_max=1.20)
+        cfg.add("unsharp_mask", strength=0.2, radius=0.5, threshold=5)
+        return cfg
+
 
 # ─── Default configuration ──────────────────────────────────────────
 

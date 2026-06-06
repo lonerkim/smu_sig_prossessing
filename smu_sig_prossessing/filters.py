@@ -127,6 +127,134 @@ def fft_notch_filter(img: np.ndarray, threshold_percentile: float = 99.5) -> np.
     return _notch_channel(img, threshold_percentile)
 
 
+@register("vertical_notch")
+def vertical_notch_filter(img: np.ndarray,
+                          sigma_detect: float = 3.0,
+                          notch_radius: int = 3,
+                          protect_dc: int = 10,
+                          debug: bool = False) -> np.ndarray:
+    """
+    Remove vertical line artifacts via frequency-domain notch filtering.
+
+    Detects anomalous peaks along the horizontal frequency axis (u-axis)
+    of the 2D FFT spectrum.  Vertical lines in the spatial domain produce
+    concentrated energy at specific horizontal frequencies that persists
+    across all vertical frequencies — so we only notch along narrow bands
+    in the u-direction while leaving the rest of the spectrum untouched.
+
+    Algorithm per channel:
+      1. 2D FFT → shift to center
+      2. Average the magnitude along the v-axis → 1D horizontal profile
+      3. Detect peaks that exceed mean + sigma_detect * std
+      4. For each peak frequency, zero out a band of width (notch_radius*2+1)
+         in the u-direction, across ALL v frequencies
+      5. Protect low frequencies (DC region) within protect_dc of center
+      6. IFFT back to spatial domain
+
+    Parameters
+    ----------
+    sigma_detect : float
+        Number of standard deviations above mean to count as a "peak".
+        Lower = more aggressive (removes more), higher = conservative.
+        Default 3.0 catches only strong periodic artifacts.
+    notch_radius : int
+        Half-width of the notch band in frequency bins.  Default 3 means
+        each peak zeroes out ±3 neighboring bins to handle spectral leakage.
+    protect_dc : int
+        Radius around DC (center) to never notch — protects image content.
+    debug : bool
+        If True, prints detected peak info.
+    """
+    if len(img.shape) == 3:
+        result = np.zeros_like(img, dtype=np.uint8)
+        for c in range(3):
+            result[:, :, c] = _vertical_notch_channel(
+                img[:, :, c], sigma_detect, notch_radius, protect_dc, debug, channel_name=str(c))
+        return result
+    return _vertical_notch_channel(img, sigma_detect, notch_radius, protect_dc, debug)
+
+
+def _vertical_notch_channel(channel: np.ndarray,
+                            sigma_detect: float,
+                            notch_radius: int,
+                            protect_dc: int,
+                            debug: bool,
+                            channel_name: str = "") -> np.ndarray:
+    rows, cols = channel.shape
+    f = np.fft.fft2(channel.astype(np.float64))
+    f_shift = np.fft.fftshift(f)
+    magnitude = np.abs(f_shift)
+    crow, ccol = rows // 2, cols // 2
+
+    # 1D horizontal profile: average magnitude along v-axis
+    h_profile = np.mean(magnitude, axis=0)  # shape: (cols,)
+
+    # Build expected baseline using local median filtering (window=21)
+    # This captures the 1/f natural spectral shape without peaks
+    from scipy.ndimage import median_filter
+    baseline = median_filter(h_profile, size=21)
+
+    # Residual = actual - baseline → highlights peaks above expected
+    residual = h_profile - baseline
+
+    # Stats on residual (exclude DC region)
+    lo = max(0, protect_dc)
+    hi = cols - protect_dc
+    left_res = residual[:ccol - lo]
+    right_res = residual[ccol + lo:hi]
+    full_res = np.concatenate([left_res, right_res])
+
+    # Use MAD (median absolute deviation) for robust outlier detection
+    med_res = np.median(full_res)
+    mad_res = np.median(np.abs(full_res - med_res))
+    # MAD-based threshold (equivalent to ~3σ for Gaussian)
+    mad_scale = 1.4826  # scaling factor for MAD→σ
+    threshold = med_res + sigma_detect * mad_scale * mad_res
+
+    # Find peak bins in both halves
+    notch_bins = set()
+
+    left_peaks = np.where(left_res > threshold)[0]
+    for p in left_peaks:
+        notch_bins.add(p)
+
+    right_peaks = np.where(right_res > threshold)[0]
+    for p in right_peaks:
+        notch_bins.add(p + ccol + lo)
+
+    if not notch_bins:
+        if debug:
+            print(f"  [vertical_notch ch={channel_name}] No peaks detected "
+                  f"(threshold={threshold:.0f}, MAD={mad_res:.0f})")
+        return channel
+
+    # Build notch mask — zero out columns (u-frequencies) around each peak
+    mask = np.ones((rows, cols), dtype=np.float64)
+    cols_zeroed = 0
+    for b in notch_bins:
+        for dr in range(-notch_radius, notch_radius + 1):
+            col_idx = b + dr
+            if 0 <= col_idx < cols:
+                dist_from_center = abs(col_idx - ccol)
+                if dist_from_center >= protect_dc:
+                    if mask[0, col_idx] > 0:  # count only once
+                        cols_zeroed += 1
+                    mask[:, col_idx] = 0.0
+
+    # Apply mask (only on magnitude, preserve phase)
+    f_shift *= mask
+
+    if debug:
+        print(f"  [vertical_notch ch={channel_name}] "
+              f"Peaks: {len(notch_bins)}, Columns zeroed: {cols_zeroed}, "
+              f"threshold={threshold:.0f}")
+
+    # IFFT
+    result = np.fft.ifftshift(f_shift)
+    result = np.fft.ifft2(result)
+    return np.clip(np.abs(result), 0, 255).astype(np.uint8)
+
+
 def _notch_channel(channel: np.ndarray, threshold_percentile: float) -> np.ndarray:
     f = np.fft.fft2(channel.astype(np.float64))
     f_shift = np.fft.fftshift(f)
@@ -603,6 +731,189 @@ def temporal_spatial_denoise(img: np.ndarray, spatial_strength: float = 5.0,
 
     # Fuse: spatial handles noise, temporal handles flicker
     return cv2.addWeighted(spatial, 0.6, temporal, 0.4, 0)
+
+
+# ─── Phase 7: Analog Video Specific ───────────────────────────────
+
+@register("flicker_stabilize")
+def flicker_stabilize(img: np.ndarray, strength: float = 0.7,
+                       window: int = 10, reset: bool = False) -> np.ndarray:
+    """
+    Temporal flicker reduction — stabilizes frame-to-frame brightness fluctuation.
+
+    Tracks a running average of per-channel mean brightness.  Each new frame's
+    brightness is gently pulled toward the running average, preventing sudden
+    flicker while allowing gradual scene changes (day/night transitions etc.).
+
+    Algorithm:
+      1. Compute per-channel mean of current frame
+      2. Maintain exponential moving average (EMA) of brightness
+      3. Compute correction factor = ema / current
+      4. Apply weighted: corrected = img * lerp(1.0, correction, strength)
+
+    Parameters
+    ----------
+    strength : float (0.0–1.0)
+        How aggressively to stabilize.  0.0 = no effect, 1.0 = full lock to EMA.
+        Default 0.7 — strong but allows natural variation.
+    window : int
+        Effective EMA window size.  Higher = slower adaptation to scene changes.
+        Default 10 ≈ 0.33s at 30fps.
+    reset : bool
+        Reset EMA state (call for first frame of a new clip).
+    """
+    if reset:
+        _temporal_state.pop("flicker_ema", None)
+
+    alpha = 2.0 / (window + 1)  # EMA smoothing factor
+
+    # Per-channel mean brightness
+    if len(img.shape) == 3:
+        means = np.array([img[:, :, c].mean() for c in range(img.shape[2])],
+                         dtype=np.float64)
+    else:
+        means = np.array([img.mean()], dtype=np.float64)
+
+    ema = _temporal_state.get("flicker_ema", None)
+    if ema is None:
+        # First frame — initialize EMA
+        _temporal_state["flicker_ema"] = means.copy()
+        return img
+
+    # Update EMA
+    ema = alpha * means + (1 - alpha) * ema
+    _temporal_state["flicker_ema"] = ema
+
+    # Correction factor per channel
+    # Avoid division by zero; only correct where mean is meaningful
+    correction = np.where(means > 1.0, ema / means, 1.0)
+
+    # Clamp to prevent extreme corrections
+    correction = np.clip(correction, 0.85, 1.15)
+
+    # Blend with original (strength controls how much we correct)
+    correction = 1.0 + strength * (correction - 1.0)
+
+    result = img.astype(np.float64)
+    if len(img.shape) == 3:
+        for c in range(img.shape[2]):
+            result[:, :, c] *= correction[c]
+    else:
+        result *= correction[0]
+
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+@register("scanline_remove")
+def scanline_remove(img: np.ndarray, mode: str = "detect",
+                     threshold: float = 0.7, blend: float = 0.5,
+                     period_hint: int = 0, reset: bool = False) -> np.ndarray:
+    """
+    Remove horizontal scanline artifacts from analog video.
+
+    Scanlines appear as periodic bright/dark horizontal lines, typically every
+    2 rows (NTSC interlace residue) or at other regular intervals.
+
+    Two modes:
+      "detect" — auto-detect scanline period via row-mean FFT analysis
+      "fixed"  — use period_hint as the scanline spacing (default 2)
+
+    Algorithm:
+      1. Compute per-row mean brightness → 1D signal
+      2. FFT of row-mean signal → find dominant periodic frequency
+      3. If periodicity detected, identify "bad" rows
+      4. Replace bad rows with interpolated values from neighboring good rows
+
+    Parameters
+    ----------
+    mode : str
+        "detect" (auto) or "fixed" (use period_hint)
+    threshold : float
+        Detection sensitivity (0–1).  Higher = only strong scanlines detected.
+    blend : float
+        How much of the replacement to apply (0 = none, 1 = full replacement).
+        Default 0.5 preserves some original texture.
+    period_hint : int
+        Fixed period to use when mode="fixed".  Default 2 (every other row).
+    """
+    if len(img.shape) == 3:
+        result = img.copy()
+        for c in range(img.shape[2]):
+            result[:, :, c] = _scanline_channel(
+                img[:, :, c], mode, threshold, blend, period_hint)
+        return result
+    return _scanline_channel(img, mode, threshold, blend, period_hint)
+
+
+def _scanline_channel(channel: np.ndarray, mode: str,
+                       threshold: float, blend: float,
+                       period_hint: int) -> np.ndarray:
+    rows, cols = channel.shape
+
+    # Row-mean brightness signal
+    row_means = channel.mean(axis=1).astype(np.float64)
+    row_means -= row_means.mean()  # remove DC
+
+    # Detect period
+    if mode == "detect":
+        fft = np.abs(np.fft.fft(row_means))
+        fft = fft[1:len(fft)//2]  # exclude DC and mirror
+
+        if len(fft) < 2:
+            return channel
+
+        # Find strongest frequency
+        peak_bin = np.argmax(fft) + 1  # +1 because we excluded DC
+        period = max(2, rows // (peak_bin + 1))
+
+        # Verify it's actually periodic: peak must be significantly above mean
+        peak_val = fft[peak_bin - 1]
+        mean_val = fft.mean()
+        if peak_val < mean_val * (1 + threshold * 5):
+            return channel  # no significant scanline pattern
+    else:
+        period = max(2, period_hint)
+
+    # Identify scanline rows — rows that deviate from local trend
+    # Use deviation from local average of neighboring rows
+    kernel_size = period
+    local_avg = np.convolve(row_means, np.ones(kernel_size)/kernel_size, mode='same')
+
+    # Rows where the signal deviates most from local average
+    deviation = np.abs(row_means - local_avg)
+    dev_threshold = np.percentile(deviation, int((1 - 1/period) * 100))
+
+    bad_rows = deviation > dev_threshold
+
+    if not np.any(bad_rows):
+        return channel
+
+    # Replace bad rows with interpolation from neighbors
+    result = channel.copy().astype(np.float64)
+    for r in range(rows):
+        if bad_rows[r]:
+            # Find nearest good rows above and below
+            r_above = r - 1
+            while r_above >= 0 and bad_rows[r_above]:
+                r_above -= 1
+            r_below = r + 1
+            while r_below < rows and bad_rows[r_below]:
+                r_below += 1
+
+            if r_above >= 0 and r_below < rows:
+                # Linear interpolation
+                t = (r - r_above) / (r_below - r_above)
+                interpolated = channel[r_above, :] * (1 - t) + channel[r_below, :] * t
+            elif r_above >= 0:
+                interpolated = channel[r_above, :]
+            elif r_below < rows:
+                interpolated = channel[r_below, :]
+            else:
+                continue
+
+            result[r, :] = channel[r, :].astype(np.float64) * (1 - blend) + interpolated * blend
+
+    return np.clip(result, 0, 255).astype(np.uint8)
 
 
 # ─── List registered filters ─────────────────────────────────────────
