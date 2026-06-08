@@ -886,3 +886,67 @@ run_auto_eval.py            — CLI 평가 도구 (--zip 지원)
 3. **Temporal denoising 고도화**: 현재 EMA 기반 → motion-compensated 고도화
 4. **실제 footage 추가 확보**: 다양한 노이즈 패턴 coverage
 5. **Deinterlace**: NTSC 인터레이스 소스 필요시 추가
+
+---
+
+## v3.3 (2026-06-08) — 6개 신규 필터 + 7개 신규 Preset + Benchmark 개선
+
+### 변경 개요
+
+**37개 필터** (+6), **35개 preset** (+7)로 확장.
+종합 점수 51.56 → **54.42** (+2.86, **5.5% 향상**).
+
+### 신규 필터 (6개)
+
+| 필터 | 설명 |
+|------|------|
+| `rolling_guidance` | Rolling Guidance Filter — iterative guided filter로 edge 보존 denoising |
+| `cross_bilateral` | Joint/Cross Bilateral Filter — guide image 기반 edge-preserving |
+| `detail_boost` | Edge-aware detail enhancement — base/detail 분해 후 detail layer 증폭 |
+| `temporal_nlm_multi` | Multi-frame NLM — OpenCV fastNlMeansDenoisingColoredMulti |
+| `bm4d_volume` | BM4D spatio-temporal — video volume collaborative filtering |
+| `adaptive_equalize` | CLAHE + brightness preservation blend |
+
+### 신규 Preset (7개)
+
+| Preset | Score | PSNR | ΔE | Speed | 설명 |
+|--------|-------|------|-----|-------|------|
+| 🔵 **temporal-premium** | **54.42** 🥇 | 18.52 | 13.59 | 160ms | Multi-frame NLM 기반 최고 품질 |
+| 🔵 **chroma-focus** | **53.59** 🥈 | 17.93 | 13.73 | 34ms | Chroma+luma 분리 집중 |
+| 🔵 **rolling-premium** | **51.73** | 18.20 | 14.58 | 35ms | Rolling guidance edge 보존 |
+| 🔵 **super-premium-fast** | **51.33** | 18.23 | 14.26 | **25ms** | 가장 빠른 고품질 |
+| 🔵 **super-premium** | **50.63** | 18.15 | 14.43 | 156ms | Wavelet+detail boost |
+| 🟢 **ultralight** | **41.33** | 16.47 | 15.41 | **3.7ms** | 실시간 270fps 가능 |
+| 🔵 **bm4d-temporal** | **47.19** | 17.16 | 13.52 | 6ms | BM4D video volume |
+
+### 벤치마크 Top 10
+
+| # | Preset | Score | PSNR | ΔE | Time |
+|---|--------|-------|------|-----|------|
+| 1🆕 | temporal-premium | **54.42** | 18.52 | 13.59 | 160ms |
+| 2🆕 | chroma-focus | **53.59** | 17.93 | 13.73 | 34ms |
+| 3🆕 | rolling-premium | **51.73** | 18.20 | 14.58 | 35ms |
+| 4 | video-ultra | 51.55 | 17.77 | 14.18 | 156ms |
+| 5 | fast-premium | 51.54 | 17.77 | 14.18 | 138ms |
+| 6🆕 | super-premium-fast | **51.33** | 18.23 | 14.26 | **25ms** |
+| 7 | video-enhanced | 51.14 | 17.85 | 14.51 | 144ms |
+| 8🆕 | super-premium | **50.63** | 18.15 | 14.43 | 156ms |
+| 9 | st-video | 47.76 | 17.49 | 17.43 | 7ms |
+| 10 | max-quality | 42.21 | 17.82 | 14.55 | 41ms |
+
+### NTSC Heavy 성능
+
+| Preset | Score | PSNR | SSIM |
+|--------|-------|------|------|
+| wavelet-denoise | 48.13 | 17.88 | 0.6471 |
+| temporal-premium | 47.02 | 17.64 | 0.6277 |
+| chroma-focus | 46.57 | 17.25 | 0.5959 |
+| rolling-premium | 46.55 | 17.44 | 0.6069 |
+
+### Architecture Changes
+
+- `filters.py`: 31 → 37 filters (Phase 8: Rolling Guidance, Phase 9: Temporal Multi-Frame NLM, Phase 10: Adaptive Equalization)
+- `config.py`: 26 → 33 static presets (7 new)
+- `main.py`: 27 → 34 preset names
+- `run_v33_benchmark.py`: New benchmark script with slow-preset skip logic
+- 기존 BM3D는 8s/frame으로 실용성 부족 → BM4D가 6ms로 1000× 빠른 대체제
