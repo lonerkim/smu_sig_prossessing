@@ -52,26 +52,8 @@ from smu_sig_prossessing.eval_viz import (
 )
 from smu_sig_prossessing.filters import reset_temporal_state
 
-# ─── Preset map (main.py와 동일) ──────────────────────────────────
-
-PRESETS: dict[str, PipelineConfig] = {
-    "edge-preserve": PipelineConfig.edge_preserve(),
-    "fast-denoise": PipelineConfig.fast_denoise(),
-    "nlm-denoise": PipelineConfig.nlm_denoise(),
-    "wiener-denoise": PipelineConfig.wiener_denoise(),
-    "wavelet-denoise": PipelineConfig.wavelet_denoise(),
-    "guided-denoise": PipelineConfig.guided_denoise(),
-    "tv-denoise": PipelineConfig.tv_denoise_preset(),
-    "aniso-denoise": PipelineConfig.aniso_denoise(),
-    "dct-denoise": PipelineConfig.dct_denoise(),
-    "st-video": PipelineConfig.spatial_temporal_video(),
-    "optimized-fast": PipelineConfig.optimized_fast(),
-    "optimized-quality": PipelineConfig.optimized_quality(),
-    "max-quality": PipelineConfig.max_quality(),
-    "video-enhanced": PipelineConfig.video_enhanced(),
-    "aggressive": PipelineConfig.aggressive(),
-    "research-best": PipelineConfig.research_best(),
-}
+# ─── Preset map (import all 38 from main.py) ────────────────────
+from main import PRESETS
 
 DEGRADE_MODES = {"none", "basic", "ntsc-light", "ntsc-medium", "ntsc-heavy"}
 
