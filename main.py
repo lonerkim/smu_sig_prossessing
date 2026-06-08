@@ -45,6 +45,9 @@ PRESETS: dict[str, PipelineConfig] = {
     "optimized-quality": PipelineConfig.optimized_quality(),
     "max-quality": PipelineConfig.max_quality(),
     "video-enhanced": PipelineConfig.video_enhanced(),
+    "video-ultra": PipelineConfig.video_ultra(),
+    "ntsc-plus": PipelineConfig.ntc_plus(),
+    "fast-premium": PipelineConfig.fast_premium(),
     "aggressive": PipelineConfig.aggressive(),
     "research-best": PipelineConfig.research_best(),
     "analog-clean": PipelineConfig.analog_clean(),
@@ -109,7 +112,11 @@ def make_degraded(origin: np.ndarray, mode: str, strength: float) -> np.ndarray:
         return origin.copy()
     if mode.startswith("ntsc"):
         intensity = mode.split("-")[1]  # light, medium, heavy
-        return degrade_image(origin, use_ntsc=True, ntsc_intensity=intensity)
+        result = degrade_image(origin, use_ntsc=True, ntsc_intensity=intensity)
+        # NTSC may change dimensions (even height requirement)
+        if result.shape != origin.shape:
+            result = cv2.resize(result, (origin.shape[1], origin.shape[0]))
+        return result
     # basic
     return degrade_image(origin, use_ntsc=False, strength=strength)
 

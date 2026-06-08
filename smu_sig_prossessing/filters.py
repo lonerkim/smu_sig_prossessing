@@ -803,7 +803,9 @@ def retinex_msrcp(img: np.ndarray,
     # Restore chromaticity: out_c = retinex_out * (img_c / I)
     # For pixels where I == 0, ratio is set to 0
     I_3d = np.expand_dims(I, axis=2)
-    ratio = np.where(I_3d > 0, img_f / I_3d, 0.0)
+    # Safe division — np.where still evaluates the division for ALL elements,
+    # which produces inf/nan for I_3d == 0. Use np.divide with where= for safety.
+    ratio = np.divide(img_f, I_3d, where=(I_3d > 0), out=np.zeros_like(img_f))
     result = np.expand_dims(retinex_out, axis=2) * ratio
 
     # Clip and convert back to uint8 BGR
