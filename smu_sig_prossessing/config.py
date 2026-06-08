@@ -148,13 +148,93 @@ class PipelineConfig:
         Best for images with sharp edges and fine texture.
         """
         cfg = PipelineConfig(label="Wavelet Denoise")
-        cfg.add("wavelet", wavelet="db4", level=3, threshold_mode="soft")
+        cfg.add("wavelet", wavelet="bior4.4", level=3, threshold_mode="soft", n_shifts=3)
         cfg.add("bilateral", d=5, sigma_color=20, sigma_space=20)
         cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)
         cfg.add("unsharp_mask", strength=0.2, radius=0.5, threshold=5)
         return cfg
 
     # ── New Presets (v3.0) ──────────────────────────────────────────
+
+    @staticmethod
+    def bm3d_denoise() -> PipelineConfig:
+        """
+        BM3D denoising preset — median prefilter + BM3D + channel correction + unsharp.
+        Best denoising quality available, suitable for moderate to heavy noise.
+
+        median removes impulse/spike noise before BM3D for better patch matching.
+        BM3D handles Gaussian + structured noise via collaborative filtering.
+        Channel correction fixes any colour shift from denoising.
+        Unsharp mask recovers edge sharpness lost during denoising.
+        """
+        cfg = PipelineConfig(label="BM3D Denoise")
+        cfg.add("median", ksize=3)
+        cfg.add("bm3d_denoise", sigma=25, profile="np")
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)
+        cfg.add("unsharp_mask", strength=0.3, radius=0.5, threshold=5)
+        return cfg
+
+    @staticmethod
+    def retinex_enhance() -> PipelineConfig:
+        """
+        Retinex illumination correction preset.
+        MSRCP corrects lighting, bilateral smooths residual noise,
+        channel correction fixes colour casts, CLAHE boosts local contrast.
+
+        Best for badly-lit, faded, or low-contrast footage where
+        illumination correction is the primary need.
+        """
+        cfg = PipelineConfig(label="Retinex Enhance")
+        cfg.add("retinex", sigma_list=[15, 80, 250], weights=[1/3, 1/3, 1/3],
+                gain=5.0, offset=0.0)
+        cfg.add("bilateral", d=7, sigma_color=50, sigma_space=50)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)
+        cfg.add("histogram_eq_clahe", clip_limit=2.0, tile_size=8)
+        return cfg
+
+    @staticmethod
+    def retinex_bm3d() -> PipelineConfig:
+        """
+        Combined Retinex + BM3D — best overall quality preset.
+        median prefilter → BM3D denoise → Retinex illumination correction →
+        channel correction → unsharp mask.
+
+        Median removes impulse noise before BM3D.
+        BM3D provides state-of-the-art denoising.
+        Retinex normalises lighting and improves contrast.
+        Channel correction balances colour channels.
+        Unsharp mask recovers edge detail.
+
+        This is the recommended preset for maximum visual quality on
+        challenging footage with both noise AND poor lighting.
+        """
+        cfg = PipelineConfig(label="Retinex + BM3D (Best Combo)")
+        cfg.add("median", ksize=3)
+        cfg.add("bm3d_denoise", sigma=25, profile="np")
+        cfg.add("retinex", sigma_list=[15, 80, 250], weights=[1/3, 1/3, 1/3],
+                gain=5.0, offset=0.0)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)
+        cfg.add("unsharp_mask", strength=0.3, radius=0.5, threshold=5)
+        return cfg
+
+    @staticmethod
+    def bm3d_fast() -> PipelineConfig:
+        """
+        Fast BM3D preset — BM3D with fast profile + channel correction only.
+        No median prefilter, no unsharp mask after.
+
+        BM3D with 'lc' (low-complexity) profile for speed.
+        Channel correction fixes any colour shift.
+        Skips median and unsharp for ~2× speed improvement over full bm3d-denoise.
+
+        Suitable when speed matters and the image has minimal impulse noise.
+        """
+        cfg = PipelineConfig(label="BM3D Fast")
+        cfg.add("bm3d_denoise", sigma=20, profile="lc")
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)
+        return cfg
+
+    # ── Guided / TV / Aniso Presets (v3.1) ──────────────────────────
 
     @staticmethod
     def guided_denoise() -> PipelineConfig:
@@ -244,7 +324,7 @@ class PipelineConfig:
         cfg = PipelineConfig(label="Optimized Quality (Fusion)")
         cfg.add("median", ksize=3)                                   # impulse
         cfg.add("bilateral", d=7, sigma_color=50, sigma_space=50)    # smooth
-        cfg.add("wavelet", wavelet="db4", level=2, threshold_mode="soft")  # detail preservation
+        cfg.add("wavelet", wavelet="bior4.4", level=2, threshold_mode="soft", n_shifts=3)  # detail preservation
         cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
         cfg.add("unsharp_mask", strength=0.2, radius=0.5, threshold=5)
         return cfg
@@ -274,7 +354,7 @@ class PipelineConfig:
         cfg = PipelineConfig(label="Video Enhanced (Guided+Wavelet+CLAHE)")
         cfg.add("median", ksize=3)                                   # impulse noise
         cfg.add("guided_filter", radius=3, eps=100.0)                # edge-aware denoise
-        cfg.add("wavelet", wavelet="db4", level=2, threshold_mode="soft")  # detail preservation
+        cfg.add("wavelet", wavelet="bior4.4", level=2, threshold_mode="soft", n_shifts=3)  # detail preservation
         cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
         cfg.add("histogram_eq_clahe", clip_limit=1.5, tile_size=8)   # local contrast
         cfg.add("unsharp_mask", strength=0.15, radius=0.5, threshold=5)  # light edge recovery
@@ -334,7 +414,7 @@ class PipelineConfig:
         cfg = PipelineConfig(label="Analog Clean (Wavelet+Flicker+Scanline)")
         cfg.add("scanline_remove", mode="detect", blend=0.5)           # horizontal scanlines
         cfg.add("flicker_stabilize", strength=0.6, window=10)          # brightness flicker
-        cfg.add("wavelet", wavelet="db4", level=2, threshold_mode="soft")  # base denoise
+        cfg.add("wavelet", wavelet="bior4.4", level=2, threshold_mode="soft", n_shifts=3)  # base denoise
         cfg.add("bilateral", d=5, sigma_color=20, sigma_space=20)      # residual noise
         cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)  # color cast
         cfg.add("unsharp_mask", strength=0.15, radius=0.5, threshold=8)  # mild sharpen
@@ -354,10 +434,32 @@ class PipelineConfig:
         cfg = PipelineConfig(label="Analog Heavy Noise")
         cfg.add("scanline_remove", mode="fixed", blend=0.6, period_hint=2)
         cfg.add("flicker_stabilize", strength=0.8, window=15)
-        cfg.add("wavelet", wavelet="db4", level=3, threshold_mode="soft")
+        cfg.add("wavelet", wavelet="bior4.4", level=3, threshold_mode="soft", n_shifts=3)
         cfg.add("bilateral", d=7, sigma_color=40, sigma_space=40)
         cfg.add("channel_correction", clamp_min=0.80, clamp_max=1.20)
         cfg.add("unsharp_mask", strength=0.2, radius=0.5, threshold=5)
+        return cfg
+
+    @staticmethod
+    def adaptive() -> PipelineConfig:
+        """
+        [ADAPTIVE] Content-aware pipeline — auto-selects and tunes filters
+        based on per-frame noise estimation.
+
+        This is a placeholder config; the actual adaptive logic lives in
+        smu_sig_prossessing.adaptive.AdaptivePipeline which analyses each
+        frame at runtime and selects the best preset + parameters.
+
+        When this preset is selected, main.py uses AdaptivePipeline instead
+        of the static apply_pipeline function.
+        """
+        # The AdaptivePipeline will replace these at runtime, but we provide
+        # a sensible default chain that mirrors fast_denoise as a baseline.
+        cfg = PipelineConfig(label="Adaptive (auto-tuned per frame)")
+        cfg.add("median", ksize=3)
+        cfg.add("bilateral", d=7, sigma_color=50, sigma_space=50)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)
+        cfg.add("unsharp_mask", strength=0.2, radius=0.5, threshold=10)
         return cfg
 
 

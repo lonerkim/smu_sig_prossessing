@@ -6,8 +6,11 @@
 아날로그 FPV DVR 영상에서 시인성을 해치는 잡음·색왜곡·대비저하를 기본 영상처리 기법으로 완화하는 범용 파이프라인.
 
 **v3.0 주요 개선**:
+- 🆕 **BM3D denoising** — Block-Matching 3D, state-of-the-art collaborative filtering
+- 🆕 **Retinex MSRCP** — Multi-Scale Retinex with Chromaticity Preservation for illumination correction
+- 🆕 **4개 신규 preset** — bm3d-denoise, retinex-enhance, retinex-bm3d, bm3d-fast
 - 🆕 **Spatio-temporal denoising** — optical flow motion compensation, frame averaging
-- 🎯 **7개 신규 필터** (총 23개) — guided filter, TV denoising, anisotropic diffusion, block DCT, temporal
+- 🎯 **7개 신규 필터** (총 25개) — guided filter, TV denoising, anisotropic diffusion, block DCT, temporal, BM3D, Retinex
 - ⚡ **Ablation 최적화 preset** — optimized-fast (PSNR 19.00, edge-preserve 대비 18× 빠름)
 - 🔬 **Batch ablation framework** — `run_ablation.py`로 자동 preset/param/filter ON-OFF 테스트
 - 📋 **Heuristic preview** — `--sample N` 플래그로 전체 처리 전 N프레임 미리보기
@@ -17,8 +20,8 @@
 ```
 smu_sig_prossessing/        — 핵심 패키지 (모듈식)
   __init__.py               — 패키지 임포트
-  config.py                 — PipelineConfig (14개 preset)
-  filters.py                — 필터 레지스트리 (23개 필터)
+  config.py                 — PipelineConfig (18개 preset)
+  filters.py                — 필터 레지스트리 (25개 필터)
   pipeline.py               — 파이프라인 러너
   degradation.py            — 열화 (기본 + NTSC, horizontal line noise + dropout)
   evaluation.py             — PSNR/SSIM + 시각화
@@ -99,7 +102,7 @@ python main.py -p "input/analog_whoop_footage.mp4" --preset video-enhanced --deg
 python main.py --list-filters
 ```
 
-## 프리셋 목록 (14개)
+## 프리셋 목록 (18개)
 
 ### 권장 Preset
 
@@ -109,6 +112,8 @@ python main.py --list-filters
 | **optimized-fast** 🏆 | Med→Bilateral(σ=110)→Channel | **19.00** | **0.12s** | **일반 목적 최적** (NLM 제거, 18× 속도) |
 | **optimized-quality** | Med→Bilateral→Wavelet→Channel→Unsharp | 18.83 | 0.28s | 고품질 융합 |
 | **wavelet-denoise** | Wavelet→Bilateral→Channel→Unsharp | 28.13(NTSC) | **0.11s** | **NTSC 아날로그 영상 최적** |
+| **bm3d-denoise** 🆕 | Med→**BM3D**→Channel→Unsharp | — | — | **최고 잡음 제거** (BM3D, state-of-the-art) |
+| **retinex-bm3d** 🆕 | Med→**BM3D**→**Retinex**→Channel→Unsharp | — | — | **잡음+조명 동시 개선** (최고 품질) |
 
 ### 기타 Preset
 
@@ -124,6 +129,8 @@ python main.py --list-filters
 | wiener-denoise | Med→Wiener→FFT→Channel→Unsharp→Gamma | 주기적 잡음용 |
 | aggressive | Med→NLM→Bilateral→Wiener→Channel→Unsharp | 극한 노이즈 |
 | research-best | Med→NLM→Bilateral→Wiener→Channel→Unsharp | 최고 SSIM |
+| **retinex-enhance** 🆕 | **Retinex**→Bilateral→Channel→CLAHE | **조명 보정 전용** (저조도/페이드) |
+| **bm3d-fast** 🆕 | **BM3D**→Channel | **빠른 BM3D** (median/unsharp 생략) |
 
 ### 성능 참고 (854×480 프레임)
 
@@ -230,11 +237,12 @@ output/eval/
   qualitative_notes_{ts}.md       — 정성 코멘트 템플릿
 ```
 
-## 등록된 필터 (23개)
+## 등록된 필터 (25개)
 
 ```
   anisotropic_diffusion     — Perona-Malik anisotropic diffusion
   bilateral                 — Bilateral filter (edge-preserving smoothing)
+  bm3d                      — BM3D (Block-Matching 3D, state-of-the-art denoising)
   channel_correction        — RGB 채널 평균 보정
   deblur_wiener             — Wiener deconvolution (디블러)
   fft_notch                 — FFT 노치 필터 (주기적 잡음)
@@ -249,6 +257,7 @@ output/eval/
   nlm                       — Non-Local Means (edge 보존)
   nlm_gray                  — NLM on luminance only
   patch_collaborative       — Block DCT thresholding
+  retinex                   — MSRCP 조명 보정 (Multi-Scale Retinex)
   temporal_average          — Sliding multi-frame averaging
   temporal_motion           — Farneback optical flow temporal denoising
   temporal_spatial          — Combined bilateral + motion compensation

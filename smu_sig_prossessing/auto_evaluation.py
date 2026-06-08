@@ -1,13 +1,15 @@
 """
-자동 정량 평가 모듈 — PSNR/SSIM 외 5개 메트릭 자동 산출.
+자동 정량 평가 모듈 — PSNR/SSIM 외 8개 메트릭 자동 산출.
 
 메트릭 구성:
-  1. Color Fidelity   — LAB ΔE 평균 (0=완전일치, 낮을수록 좋음)
-  2. Brightness       — 평균 휘도 비율 (1.0=원본 동일, >1=밝음, <1=어두움)
-  3. Edge Retention   — Canny edge 픽셀 비율 (1.0=원본과 동일 edge량)
-  4. Noise Level      — Laplacian 분산 (낮을수록 깨끗함)
-  5. Artifact Score   — ringing/blocking 의심 점수 (낮을수록 좋음)
-  6. Detail Recovery  — 고주파 에너지 보존율 (1.0=완전 보존)
+  1. PSNR            — Peak Signal-to-Noise Ratio (dB, 높을수록 좋음)
+  2. SSIM            — Structural Similarity (0~1, 높을수록 좋음)
+  3. Color Fidelity  — CIEDE2000 ΔE 평균 (0=완전일치, 낮을수록 좋음)
+  4. Edge Retention  — Canny edge 픽셀 비율 (1.0=원본과 동일 edge량)
+  5. Noise Level     — Laplacian 분산 (낮을수록 깨끗함)
+  6. Detail Recovery — 고주파 에너지 보존율 (1.0=완전 보존)
+  7. Artifact Score  — ringing/blocking 의심 점수 (낮을수록 좋음)
+  8. VIF             — Visual Information Fidelity (0~1, 높을수록 좋음)
 
 Composite Quality Score = 가중 평균 (0~100 점)
 
@@ -40,7 +42,8 @@ class MetricResult:
 
     @property
     def display(self) -> str:
-        return f"{self.name}: {self.value:.4f} ({self.unit})"
+        arrow = "↑" if self.best == "higher" else "↓"
+        return f"{self.name}: {self.value:.3f}{arrow} ({self.unit})"
 
 
 @dataclass
@@ -68,20 +71,21 @@ class AutoEvaluator:
     """
     자동 정량 평가기.
 
-    origin(원본)과 processed(처리 결과)를 비교하여 6개 메트릭 산출.
+    origin(원본)과 processed(처리 결과)를 비교하여 8개 메트릭 산출.
     degrade 없이 실제 아날로그 영상을 평가할 때는 origin 대신
     reference 이미지를 넣으면 됨.
     """
 
     # 가중치 (합=1.0) — 프로젝트 특성에 맞게 조정 가능
     WEIGHTS = {
-        "psnr": 0.15,
-        "ssim": 0.20,
-        "color_fidelity": 0.15,
-        "edge_retention": 0.15,
-        "noise_level": 0.15,
-        "detail_recovery": 0.10,
-        "artifact_score": 0.10,
+        "psnr": 0.1425,
+        "ssim": 0.1900,
+        "color_fidelity": 0.1425,
+        "edge_retention": 0.1425,
+        "noise_level": 0.1425,
+        "detail_recovery": 0.0950,
+        "artifact_score": 0.0950,
+        "vif": 0.0500,
     }
 
     def __init__(self, weights: dict | None = None):
@@ -106,23 +110,24 @@ class AutoEvaluator:
 
     def _color_fidelity(self, origin: np.ndarray, processed: np.ndarray) -> float:
         """
-        색 충실도 — LAB ΔE (CIE76) 평균.
+        색 충실도 — CIEDE2000 ΔE 평균.
         0 = 완전 일치, 낮을수록 좋음.
         일반적으로 ΔE < 1 = 지각 불가, < 3 = 허용, > 6 = 현저.
+        CIEDE2000은 CIE76보다 인간 시각 인지에 더 부합함.
         """
+        from skimage.color import deltaE_ciede2000
+
         lab_o = cv2.cvtColor(origin, cv2.COLOR_BGR2LAB).astype(np.float64)
         lab_p = cv2.cvtColor(processed, cv2.COLOR_BGR2LAB).astype(np.float64)
-        # LAB에서 L: 0~255 (OpenCV scale), normalize
-        lab_o[:, :, 0] *= 100.0 / 255.0
-        lab_p[:, :, 0] *= 100.0 / 255.0
-        # a, b: OpenCV에서 0~255 → -128~127로 변환 후 * scale
-        lab_o[:, :, 1] = (lab_o[:, :, 1] - 128.0)
-        lab_p[:, :, 1] = (lab_p[:, :, 1] - 128.0)
-        lab_o[:, :, 2] = (lab_o[:, :, 2] - 128.0)
-        lab_p[:, :, 2] = (lab_p[:, :, 2] - 128.0)
+        # Scale to CIELAB space
+        lab_o[:, :, 0] = lab_o[:, :, 0] * 100.0 / 255.0  # L 0-100
+        lab_p[:, :, 0] = lab_p[:, :, 0] * 100.0 / 255.0
+        lab_o[:, :, 1] -= 128  # a -128..127
+        lab_p[:, :, 1] -= 128
+        lab_o[:, :, 2] -= 128  # b -128..127
+        lab_p[:, :, 2] -= 128
 
-        delta = lab_o - lab_p
-        de = np.sqrt(np.sum(delta ** 2, axis=2))
+        de = deltaE_ciede2000(lab_o, lab_p)
         return float(np.mean(de))
 
     def _brightness_ratio(self, origin: np.ndarray, processed: np.ndarray) -> float:
@@ -231,6 +236,60 @@ class AutoEvaluator:
 
         return float(ringing_score * 0.4 + block_score * 0.3 + overshoot * 0.3)
 
+    def _vif(self, origin: np.ndarray, processed: np.ndarray) -> float:
+        """
+        Visual Information Fidelity (VIF) — simplified wavelet-based.
+
+        Computes the ratio of mutual information between reference and
+        distorted images in 4-level DWT subbands. Higher = more information
+        preserved from the reference. Range: ~0-1 (theoretically unbounded
+        but practically 0-1 for similar images).
+
+        Simplified approach: decompose both images with Daubechies 9/7
+        wavelet, compute the correlation (as a proxy for mutual information)
+        in each subband, and aggregate into a single fidelity score.
+        """
+        import pywt
+
+        gray_o = cv2.cvtColor(origin, cv2.COLOR_BGR2GRAY).astype(np.float64)
+        gray_p = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY).astype(np.float64)
+
+        # 4-level DWT with Daubechies 9/7 wavelet
+        coeffs_o = pywt.wavedec2(gray_o, 'db9', level=4)
+        coeffs_p = pywt.wavedec2(gray_p, 'db9', level=4)
+
+        # Approximate subband: cA (low-pass)
+        cA_o = coeffs_o[0]
+        cA_p = coeffs_p[0]
+
+        # Detail subbands: cH, cV, cD at each level
+        scores = []
+        # Include approximation subband correlation
+        if cA_o.size > 1 and cA_p.size > 1:
+            # Normalized cross-correlation as information preservation proxy
+            cA_o_flat = cA_o.ravel()
+            cA_p_flat = cA_p.ravel()
+            if np.std(cA_o_flat) > 1e-8 and np.std(cA_p_flat) > 1e-8:
+                cA_corr = float(np.corrcoef(cA_o_flat, cA_p_flat)[0, 1])
+                scores.append(max(0, cA_corr))
+
+        # Detail subbands at each level
+        for level_idx, detail_tuple in enumerate(coeffs_o[1:], 1):
+            detail_p_tuple = coeffs_p[level_idx]
+            for band_idx in range(3):  # HL, LH, HH
+                band_o = detail_tuple[band_idx].ravel()
+                band_p = detail_p_tuple[band_idx].ravel()
+                if band_o.size > 1 and np.std(band_o) > 1e-8 and np.std(band_p) > 1e-8:
+                    corr = float(np.corrcoef(band_o, band_p)[0, 1])
+                    # Weight higher levels (coarser scales) more heavily
+                    weight = 1.0 + level_idx * 0.25
+                    scores.append(max(0, corr) * weight)
+
+        if not scores:
+            return 0.0
+
+        return float(np.mean(scores))
+
     # ─── Composite Score ──────────────────────────────────────────
 
     def compute_composite(self, result: EvalResult) -> float:
@@ -262,6 +321,9 @@ class AutoEvaluator:
             elif m.name == "artifact_score":
                 # 0~30 → 100~0
                 scores["artifact_score"] = np.clip((1 - m.value / 30) * 100, 0, 100)
+            elif m.name == "vif":
+                # 0~1 → 0~100 (theoretically can exceed 1, clamp at 100)
+                scores["vif"] = np.clip(m.value * 100, 0, 100)
 
         total = 0.0
         for key, weight in self.WEIGHTS.items():
@@ -288,7 +350,7 @@ class AutoEvaluator:
 
         Returns
         -------
-        EvalResult with 7 metrics + composite score
+        EvalResult with 8 metrics + composite score
         """
         # shape 맞추기
         if origin.shape[:2] != processed.shape[:2]:
@@ -300,22 +362,24 @@ class AutoEvaluator:
             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
 
-        # 7개 메트릭 산출
+        # 7개 메트릭 산출 (now 8 with VIF)
         metrics = [
             MetricResult("psnr", self._psnr(origin, processed), "dB",
                          "Peak Signal-to-Noise Ratio", "higher"),
             MetricResult("ssim", self._ssim(origin, processed), "",
                          "Structural Similarity Index", "higher"),
             MetricResult("color_fidelity", self._color_fidelity(origin, processed), "ΔE",
-                         "CIE76 color difference (lower=better)", "lower"),
+                         "CIEDE2000 color difference (lower=better)", "lower"),
             MetricResult("edge_retention", self._edge_retention(origin, processed), "ratio",
                          "Canny edge count ratio (1.0=identical)", "higher"),
-            MetricResult("noise_level", self._noise_level(processed), "Lap. var",
+            MetricResult("noise_level", self._noise_level(processed), "Lap.var",
                          "Laplacian variance (lower=cleaner)", "lower"),
             MetricResult("detail_recovery", self._detail_recovery(origin, processed), "ratio",
                          "High-frequency energy ratio (1.0=preserved)", "higher"),
             MetricResult("artifact_score", self._artifact_score(origin, processed), "score",
                          "Ringing+blocking+overshoot score (lower=better)", "lower"),
+            MetricResult("vif", self._vif(origin, processed), "",
+                         "Visual Information Fidelity (higher=better)", "higher"),
         ]
 
         # degraded 노이즈 레벨도 참고용으로 추가
@@ -333,16 +397,17 @@ class AutoEvaluator:
         return result
 
     def _print_result(self, r: EvalResult):
-        """결과를 테이블 형식으로 출력."""
-        print(f"\n{'═' * 60}")
+        """결과를 콤팩트 테이블 형식으로 출력."""
+        print(f"\n{'═' * 65}")
         print(f"📊 Auto Evaluation: {r.label}")
-        print(f"{'═' * 60}")
+        print(f"{'═' * 65}")
         for m in r.metrics:
             arrow = "↑" if m.best == "higher" else "↓"
-            print(f"  {m.name:25s}  {m.value:10.4f}  {arrow} {m.unit}")
-        print(f"{'─' * 60}")
-        print(f"  {'COMPOSITE SCORE':25s}  {r.composite_score:10.2f}  / 100")
-        print(f"{'═' * 60}")
+            unit_str = f" [{m.unit}]" if m.unit else ""
+            print(f"  {m.name:20s} {m.value:8.4f} {arrow}{unit_str}")
+        print(f"{'─' * 65}")
+        print(f"  {'COMPOSITE':20s} {r.composite_score:8.2f} /100")
+        print(f"{'═' * 65}")
 
     # ─── Batch Compare ────────────────────────────────────────────
 
@@ -427,8 +492,8 @@ class AutoEvaluator:
         # Ranking
         lines.append("## Ranking")
         lines.append("")
-        lines.append("| # | Preset | Composite | PSNR | SSIM | ΔE | Edge | Noise | Detail | Artifact |")
-        lines.append("|---|--------|-----------|------|------|----|------|-------|--------|----------|")
+        lines.append("| # | Preset | Composite | PSNR | SSIM | ΔE | Edge | Noise | Detail | Artifact | VIF |")
+        lines.append("|---|--------|-----------|------|------|----|------|-------|--------|----------|-----|")
         for i, r in enumerate(results):
             m = {m.name: m.value for m in r.metrics}
             lines.append(
@@ -436,7 +501,7 @@ class AutoEvaluator:
                 f"{m.get('psnr', 0):.2f} | {m.get('ssim', 0):.4f} | "
                 f"{m.get('color_fidelity', 0):.2f} | {m.get('edge_retention', 0):.3f} | "
                 f"{m.get('noise_level', 0):.1f} | {m.get('detail_recovery', 0):.3f} | "
-                f"{m.get('artifact_score', 0):.2f} |"
+                f"{m.get('artifact_score', 0):.2f} | {m.get('vif', 0):.4f} |"
             )
         lines.append("")
 

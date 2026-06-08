@@ -8,3 +8,6 @@ samples/
 *.avi
 *.mov
 *.mkv
+.venv/
+__pycache__/
+*.pyc

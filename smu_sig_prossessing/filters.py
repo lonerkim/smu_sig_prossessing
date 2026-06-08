@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import cv2
+from bm3d import bm3d_rgb, bm3d
 
 
 # ─── Filter Registry ─────────────────────────────────────────────────
@@ -280,53 +281,95 @@ def _notch_channel(channel: np.ndarray, threshold_percentile: float) -> np.ndarr
 # ─── Phase 2: Wavelet Denoising (Research) ────────────────────────
 
 @register("wavelet")
-def wavelet_denoise(img: np.ndarray, wavelet: str = "db4",
-                    level: int = 3, threshold_mode: str = "soft") -> np.ndarray:
+def wavelet_denoise(img: np.ndarray, wavelet: str = "bior4.4",
+                    level: int = 3, threshold_mode: str = "soft",
+                    n_shifts: int = 3) -> np.ndarray:
     """
-    Wavelet-based denoising — excellent edge preservation.
-    Uses Bayesian thresholding (VisuShrink style).
+    Wavelet-based denoising with BayesShrink + cycle-spinning.
 
-    wavelet : wavelet family ('db4', 'sym4', 'coif1', 'haar')
+    Eliminates ringing near strong vertical edges by:
+      • BayesShrink: adaptive per-subband threshold instead of universal
+      • Cycle-spinning: shift-denoise-unshift-average to reduce shift-variance
+      • bior4.4 wavelet: better symmetry than db4, less boundary ringing
+
+    wavelet : wavelet family ('bior4.4', 'sym8', 'db4')
     level : decomposition level (2-4)
     threshold_mode : 'soft' (smoother) or 'hard' (sharper)
+    n_shifts : number of cycle-spin shifts (0 = disabled, 2-4 recommended)
     """
-    import pywt
-    import warnings
-
     if len(img.shape) == 3:
-        result = np.zeros_like(img)
+        result = np.zeros_like(img, dtype=np.float64)
         for c in range(3):
-            result[:, :, c] = _wavelet_channel(img[:, :, c], wavelet, level, threshold_mode)
-        return result
-    return _wavelet_channel(img, wavelet, level, threshold_mode)
+            result[:, :, c] = _wavelet_channel_cycled(
+                img[:, :, c], wavelet, level, threshold_mode, n_shifts)
+        return np.clip(result, 0, 255).astype(np.uint8)
+    return np.clip(
+        _wavelet_channel_cycled(img, wavelet, level, threshold_mode, n_shifts),
+        0, 255).astype(np.uint8)
 
 
-def _wavelet_channel(channel: np.ndarray, wavelet: str, level: int,
-                     threshold_mode: str) -> np.ndarray:
+def _wavelet_channel_cycled(channel: np.ndarray, wavelet: str, level: int,
+                             threshold_mode: str, n_shifts: int) -> np.ndarray:
+    """Apply cycle-spinning wavelet denoising to reduce shift-variance artifacts."""
     import pywt
-    import numpy as np
 
-    coeffs = pywt.wavedec2(channel.astype(np.float64), wavelet, level=level)
-    # Estimate noise sigma from finest-scale diagonal details (HH = index 2 in tuple)
-    sigma = 10.0
-    if len(coeffs) > 1 and isinstance(coeffs[-1], tuple) and len(coeffs[-1]) > 2:
-        hh = coeffs[-1][2]
-        if hh.size > 0:
-            sigma = np.median(np.abs(hh)) / 0.6745
-    # VisuShrink universal threshold
-    threshold = sigma * np.sqrt(2 * np.log(channel.size))
-    # Apply thresholding to detail coefficients (skip approximation)
+    ch = channel.astype(np.float64)
+    h, w = ch.shape
+
+    if n_shifts <= 0:
+        return _wavelet_channel_bayes(ch, wavelet, level, threshold_mode)
+
+    # Cycle-spinning: shift → denoise → unshift → average
+    accumulated = np.zeros_like(ch)
+    shifts_done = 0
+    for sx in range(n_shifts):
+        for sy in range(n_shifts):
+            # Circular shift
+            shifted = np.roll(np.roll(ch, sx, axis=0), sy, axis=1)
+            # Denoise
+            denoised = _wavelet_channel_bayes(shifted, wavelet, level, threshold_mode)
+            # Unshift
+            unshifted = np.roll(np.roll(denoised, -sx, axis=0), -sy, axis=1)
+            accumulated += unshifted
+            shifts_done += 1
+
+    return accumulated / shifts_done
+
+
+def _wavelet_channel_bayes(channel: np.ndarray, wavelet: str, level: int,
+                            threshold_mode: str) -> np.ndarray:
+    """BayesShrink wavelet denoising — adaptive per-subband threshold."""
+    import pywt
+
+    coeffs = pywt.wavedec2(channel, wavelet, level=level)
     coeffs = list(coeffs)
+
     for j in range(1, len(coeffs)):
-        coeffs[j] = tuple(
-            pywt.threshold(d, threshold, mode=threshold_mode)
-            for d in coeffs[j]
-        )
+        # Per-subband adaptive threshold (BayesShrink)
+        # For each detail subband (LH, HL, HH), estimate threshold adaptively
+        new_detail = []
+        for d in coeffs[j]:
+            # Estimate noise sigma from this subband using robust MAD
+            sigma = np.median(np.abs(d)) / 0.6745
+            if sigma < 1e-10:
+                new_detail.append(d)
+                continue
+            # BayesShrink threshold: T = sigma² / sigma_x
+            # where sigma_x² = max(var(detail) - sigma², 0)
+            var_x = np.var(d) - sigma ** 2
+            if var_x <= 0:
+                # All signal — don't threshold
+                new_detail.append(d)
+                continue
+            sigma_x = np.sqrt(var_x)
+            threshold = sigma ** 2 / sigma_x
+            new_detail.append(pywt.threshold(d, threshold, mode=threshold_mode))
+        coeffs[j] = tuple(new_detail)
+
     # Reconstruct
     reconstructed = pywt.waverec2(coeffs, wavelet)
-    # Handle size mismatch (wavelet may round dimensions)
     h, w = channel.shape
-    return np.clip(np.abs(reconstructed[:h, :w]), 0, 255).astype(np.uint8)
+    return reconstructed[:h, :w]
 
 
 # ─── Phase 3: Color / Contrast Enhancement ──────────────────────────
@@ -561,7 +604,214 @@ def tv_denoise(img: np.ndarray, weight: float = 0.1,
     return np.clip(result * 255, 0, 255).astype(np.uint8)
 
 
-# ─── Phase 5: Patch-based Denoising ───────────────────────────────
+# ─── Phase 5: BM3D Denoising ──────────────────────────────────────
+
+@register("bm3d")
+def bm3d_filter(img: np.ndarray, sigma_psd: float = 15.0,
+                stage_arg: int = 3) -> np.ndarray:
+    """
+    BM3D (Block-Matching and 3D Filtering) denoising.
+
+    State-of-the-art denoising that groups similar patches into 3D arrays,
+    filters them collaboratively in the transform domain, then aggregates.
+
+    Parameters
+    ----------
+    sigma_psd : float (5–50)
+        Noise standard deviation. Higher = stronger denoising.
+        Default 15 is a good starting point for mild noise.
+    stage_arg : int
+        Processing stages (grayscale only — RGB always uses both stages):
+        1=hard-thresholding only (faster), 2=Wiener filtering only,
+        3=both stages (best quality).  Default 3.
+
+    Notes
+    -----
+    The bm3d library expects RGB uint8 (0–255) input.
+    Pipeline passes BGR, so conversion is done internally.
+
+    For colour images, bm3d_rgb() uses its built-in profile parameter.
+    stage_arg is passed to the grayscale bm3d() function only.
+    """
+    if len(img.shape) == 3 and img.shape[2] == 3:
+        # BGR → RGB for bm3d library
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # bm3d_rgb does NOT have stage_arg; it uses profile='np' (both stages)
+        # Returns float64, may slightly exceed [0,255]
+        result_rgb = bm3d_rgb(rgb, sigma_psd=sigma_psd)
+        result_rgb = np.clip(np.round(result_rgb), 0, 255).astype(np.uint8)
+        # RGB → BGR back to pipeline convention
+        return cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
+    else:
+        # Grayscale / single-channel — stage_arg is supported here
+        return bm3d(img, sigma_psd=sigma_psd, stage_arg=stage_arg)
+
+
+@register("bm3d_denoise")
+def bm3d_denoise_filter(img: np.ndarray, sigma: float = 25.0,
+                         profile: str = "np") -> np.ndarray:
+    """
+    BM3D denoising — per-channel independent processing.
+
+    Unlike the 'bm3d' filter (which uses bm3d_rgb for joint colour processing),
+    this filter denoises each colour channel independently using the grayscale
+    BM3D algorithm.  This avoids cross-channel colour bleeding that can occur
+    when channels are processed jointly.
+
+    Parameters
+    ----------
+    sigma : float (5–50)
+        Noise standard deviation estimate.  Higher = stronger denoising.
+        Default 25 suits moderate-to-heavy noise.
+    profile : str
+        BM3D profile — 'np' (default, both stages), 'lc' (faster/lower quality),
+        'high' (higher quality, slower), 'refilter', 'vn', 'deb'.
+        Use 'lc' for the fast variant.
+    """
+    from bm3d import bm3d as bm3d_gray, BM3DStages
+
+    if len(img.shape) == 3 and img.shape[2] == 3:
+        result = np.zeros_like(img, dtype=np.float64)
+        for c in range(3):
+            channel = img[:, :, c].astype(np.float64)
+            denoised = bm3d_gray(channel, sigma_psd=sigma,
+                                  profile=profile,
+                                  stage_arg=BM3DStages.ALL_STAGES)
+            h, w = channel.shape
+            result[:, :, c] = denoised[:h, :w]
+        return np.clip(np.round(result), 0, 255).astype(np.uint8)
+    else:
+        denoised = bm3d_gray(img.astype(np.float64), sigma_psd=sigma,
+                              profile=profile,
+                              stage_arg=BM3DStages.ALL_STAGES)
+        return np.clip(np.round(denoised), 0, 255).astype(np.uint8)
+
+
+@register("chroma_denoise")
+def chroma_denoise(img: np.ndarray, strength: float = 0.5) -> np.ndarray:
+    """
+    Chroma-specific denoising — preserves luma detail, denoises chroma channels.
+
+    Converts to YCbCr space, applies stronger denoising to Cb and Cr channels
+    (which carry colour information but less perceptual detail), and preserves
+    the Y (luma) channel intact.
+
+    Human vision is far less sensitive to chroma noise than luma noise, so
+    aggressive chroma denoising is safe and effective for removing colour
+    splotches without affecting image sharpness.
+
+    Parameters
+    ----------
+    strength : float (0.0–1.0)
+        Chroma denoising strength.  Higher = more aggressive chroma smoothing.
+        Default 0.5 applies moderate chroma denoising.
+    """
+    ycbcr = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+    y = ycbcr[:, :, 0].astype(np.float32)
+    cb = ycbcr[:, :, 1].astype(np.float32)
+    cr = ycbcr[:, :, 2].astype(np.float32)
+
+    # Bilateral filter strength scaled by the strength parameter
+    d = max(5, int(9 * strength))
+    sigma_color = 30 + 70 * strength  # 30–100
+    sigma_space = 30 + 70 * strength
+
+    # Stronger denoising on chroma channels
+    cb_denoised = cv2.bilateralFilter(cb.astype(np.uint8), d, sigma_color, sigma_space)
+    cr_denoised = cv2.bilateralFilter(cr.astype(np.uint8), d, sigma_color, sigma_space)
+
+    # For very high strength, apply a second pass
+    if strength > 0.7:
+        cb_denoised = cv2.bilateralFilter(cb_denoised, d, sigma_color * 0.7, sigma_space * 0.7)
+        cr_denoised = cv2.bilateralFilter(cr_denoised, d, sigma_color * 0.7, sigma_space * 0.7)
+
+    ycbcr_out = ycbcr.copy()
+    ycbcr_out[:, :, 1] = cb_denoised
+    ycbcr_out[:, :, 2] = cr_denoised
+    return cv2.cvtColor(ycbcr_out, cv2.COLOR_YCrCb2BGR)
+
+
+@register("retinex")
+def retinex_msrcp(img: np.ndarray,
+                  sigma_list: list | None = None,
+                  weights: list | None = None,
+                  gain: float = 5.0,
+                  offset: float = 0.0) -> np.ndarray:
+    """
+    Multi-Scale Retinex with Chromaticity Preservation (MSRCP).
+
+    Illumination correction that decomposes an image into reflectance and
+    illumination components.  The reflectance (detail) is preserved while
+    the illumination (lighting) is normalised, producing a well-lit,
+    natural-looking result even from badly-lit or faded footage.
+
+    Algorithm (per the original MSRCP paper):
+      1. Convert BGR → float32 [0, 1]
+      2. Intensity channel I = max(R, G, B) per pixel
+      3. For each scale σ:
+           blur_I = GaussianBlur(I, σ)
+           retinex += weight * (log(I + 1) - log(blur_I + 1))
+      4. Apply gain/offset to the accumulated retinex output
+      5. Restore colour: out_c = retinex_out * (img_c / I)  (chromaticity)
+      6. Clip to [0, 1], scale to uint8 [0, 255]
+
+    Parameters
+    ----------
+    sigma_list : list of float, optional
+        Spatial scales for the Gaussian surrounds.  Default [15, 80, 250].
+        Smaller = detail enhancement, larger = colour/illumination correction.
+    weights : list of float, optional
+        Weight per scale.  Must sum to 1.  Default equal weights.
+    gain : float, default 5.0
+        Amplification of the retinex output.  Higher = more contrast stretch.
+    offset : float, default 0.0
+        DC offset applied after gain.
+
+    References
+    ----------
+    D. J. Jobson, Z. Rahman, G. A. Woodell, "A multiscale retinex for
+    bridging the gap between color images and the human observation of scenes",
+    IEEE Trans. Image Processing, 6(7), 1997.
+    """
+    if sigma_list is None:
+        sigma_list = [15.0, 80.0, 250.0]
+    n_scales = len(sigma_list)
+    if weights is None:
+        w = 1.0 / n_scales
+        weights = [w] * n_scales
+
+    # Convert BGR to float32 [0, 1]
+    img_f = img.astype(np.float32) / 255.0
+
+    # Intensity: max of R, G, B per pixel
+    I = np.max(img_f, axis=2)
+
+    # Multi-scale retinex on intensity
+    small_val = 1e-12  # avoid log(0)
+    retinex_out = np.zeros_like(I, dtype=np.float32)
+
+    for sigma, weight in zip(sigma_list, weights):
+        # Blur the intensity at the current scale
+        blurred = cv2.GaussianBlur(I, (0, 0), sigma)
+        # Log-domain difference
+        diff = np.log(I + small_val) - np.log(blurred + small_val)
+        retinex_out += weight * diff
+
+    # Gain/offset
+    retinex_out = gain * retinex_out + offset
+
+    # Restore chromaticity: out_c = retinex_out * (img_c / I)
+    # For pixels where I == 0, ratio is set to 0
+    I_3d = np.expand_dims(I, axis=2)
+    ratio = np.where(I_3d > 0, img_f / I_3d, 0.0)
+    result = np.expand_dims(retinex_out, axis=2) * ratio
+
+    # Clip and convert back to uint8 BGR
+    result = np.clip(result, 0.0, 1.0)
+    return (result * 255.0).astype(np.uint8)
+
+
+# ─── Phase 6: Patch-based Denoising ───────────────────────────────
 
 @register("patch_collaborative")
 def patch_collaborative(img: np.ndarray, patch_size: int = 8,

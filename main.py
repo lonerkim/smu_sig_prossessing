@@ -47,6 +47,14 @@ PRESETS: dict[str, PipelineConfig] = {
     "video-enhanced": PipelineConfig.video_enhanced(),
     "aggressive": PipelineConfig.aggressive(),
     "research-best": PipelineConfig.research_best(),
+    "analog-clean": PipelineConfig.analog_clean(),
+    "analog-heavy": PipelineConfig.analog_heavy(),
+    "adaptive": PipelineConfig.adaptive(),
+    # ── New BM3D / Retinex presets ──────────────────────────────
+    "bm3d-denoise": PipelineConfig.bm3d_denoise(),
+    "retinex-enhance": PipelineConfig.retinex_enhance(),
+    "retinex-bm3d": PipelineConfig.retinex_bm3d(),
+    "bm3d-fast": PipelineConfig.bm3d_fast(),
 }
 
 # ─── Degrade modes ──────────────────────────────────────────────────
@@ -136,7 +144,8 @@ def save_comparison(origin: np.ndarray, degraded: np.ndarray,
 # ─── Processing ─────────────────────────────────────────────────────
 
 def process_image(path: str, cfg: PipelineConfig,
-                  degrade_mode: str, strength: float) -> str | None:
+                  degrade_mode: str, strength: float,
+                  adaptive_pipeline: 'AdaptivePipeline | None' = None) -> str | None:
     origin = cv2.imread(path)
     if origin is None:
         print(f"  ⚠ Cannot read: {path}")
@@ -148,7 +157,10 @@ def process_image(path: str, cfg: PipelineConfig,
     cv2.imwrite(os.path.join(OUT_RAW, f"{name}.png"), degraded)
 
     # 2) Pipeline → processed/
-    restored = pl.apply_pipeline(degraded, cfg)
+    if adaptive_pipeline is not None:
+        restored = adaptive_pipeline.process(degraded)
+    else:
+        restored = pl.apply_pipeline(degraded, cfg)
     cv2.imwrite(os.path.join(OUT_PROC, f"{name}.png"), restored)
 
     # 3) Side-by-side comparison
@@ -167,9 +179,12 @@ def process_image(path: str, cfg: PipelineConfig,
 
 def process_video(path: str, cfg: PipelineConfig,
                   degrade_mode: str, strength: float,
-                  sample_frames: int = 0) -> str | None:
+                  sample_frames: int = 0,
+                  adaptive_pipeline: 'AdaptivePipeline | None' = None) -> str | None:
     from smu_sig_prossessing.filters import reset_temporal_state
     reset_temporal_state()  # reset temporal filters before each video
+    if adaptive_pipeline is not None:
+        adaptive_pipeline.reset()
 
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
@@ -191,7 +206,10 @@ def process_video(path: str, cfg: PipelineConfig,
             if not ret:
                 break
             degraded = make_degraded(frame, degrade_mode, strength)
-            restored = pl.apply_pipeline(degraded, cfg)
+            if adaptive_pipeline is not None:
+                restored = adaptive_pipeline.process(degraded)
+            else:
+                restored = pl.apply_pipeline(degraded, cfg)
             # Save individual sample comparison
             samp_cmp = os.path.join(OUT_CMP, f"{name}_sample_{f_idx:03d}.png")
             save_comparison(frame, degraded, restored, samp_cmp)
@@ -230,7 +248,10 @@ def process_video(path: str, cfg: PipelineConfig,
         degraded = make_degraded(frame, degrade_mode, strength)
         raw_writer.write(degraded)
 
-        restored = pl.apply_pipeline(degraded, cfg)
+        if adaptive_pipeline is not None:
+            restored = adaptive_pipeline.process(degraded)
+        else:
+            restored = pl.apply_pipeline(degraded, cfg)
         proc_writer.write(restored)
 
         count += 1
@@ -246,7 +267,10 @@ def process_video(path: str, cfg: PipelineConfig,
     cmp_path = None
     if first_origin is not None:
         d0 = make_degraded(first_origin, degrade_mode, strength)
-        r0 = pl.apply_pipeline(d0, cfg)
+        if adaptive_pipeline is not None:
+            r0 = adaptive_pipeline.process(d0)
+        else:
+            r0 = pl.apply_pipeline(d0, cfg)
         cmp_path = os.path.join(OUT_CMP, f"{name}_comparison.png")
         save_comparison(first_origin, d0, r0, cmp_path)
         print(f"      compare  → {cmp_path}")
@@ -362,8 +386,15 @@ def main():
 
     cfg = PRESETS[args.preset]
 
-    print(f"\n🔧 Preset:     {cfg.label}")
-    print(f"   Filters:    {' → '.join(s.name for s in cfg.stages if s.enabled)}")
+    # If adaptive preset selected, create the AdaptivePipeline instance
+    adaptive_pipe = None
+    if args.preset == "adaptive":
+        from smu_sig_prossessing.adaptive import AdaptivePipeline
+        adaptive_pipe = AdaptivePipeline(verbose=True)
+        print(f"\n🔧 Preset:     Adaptive (auto-tuned per frame)")
+    else:
+        print(f"\n🔧 Preset:     {cfg.label}")
+        print(f"   Filters:    {' → '.join(s.name for s in cfg.stages if s.enabled)}")
     print(f"   Degrade:    {args.degrade}  (strength={args.strength:.1f})")
     print(f"   Input:      {len(files)} file(s) ({len(images)} image, {len(videos)} video)")
     print(f"   Output:")
@@ -373,10 +404,13 @@ def main():
     print()
 
     for f in images:
-        process_image(f, cfg, args.degrade, args.strength)
+        process_image(f, cfg, args.degrade, args.strength,
+                      adaptive_pipeline=adaptive_pipe)
 
     for f in videos:
-        process_video(f, cfg, args.degrade, args.strength, sample_frames=args.sample)
+        process_video(f, cfg, args.degrade, args.strength,
+                      sample_frames=args.sample,
+                      adaptive_pipeline=adaptive_pipe)
 
     print(f"\n✅ Done — {len(images) + len(videos)} file(s) processed.")
 
