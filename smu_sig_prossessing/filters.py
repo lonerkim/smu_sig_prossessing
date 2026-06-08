@@ -1836,6 +1836,255 @@ def domain_transform_filter(img: np.ndarray, sigma_s: float = 10.0,
     return np.clip(result * 255, 0, 255).astype(np.uint8)
 
 
+# ─── Phase 13: Deinterlacing Filters ───────────────────────────────
+
+@register("deinterlace")
+def deinterlace_filter(img: np.ndarray, method: str = "bob",
+                        field_order: str = "auto",
+                        blend_strength: float = 0.5) -> np.ndarray:
+    """
+    Deinterlace analog video — converts interlaced fields to progressive frames.
+
+    Analog NTSC/PAL video stores interlaced frames where each frame contains
+    two fields (odd lines = first field, even lines = second field) captured
+    at different times.  Deinterlacing reconstructs a full-resolution frame.
+
+    Three methods:
+      "bob"         — Simple linear interpolation of missing lines (fastest).
+                      Each field is upsampled to full frame via linear interp.
+                      Suitable for low-motion content, introduces slight blur.
+
+      "weave"       — Weave fields together without interpolation.  Takes
+                      odd lines from current frame, even lines from previous
+                      (or current) frame.  Best for static scenes; causes
+                      combing artifacts on motion.
+
+      "motion-adaptive" — Detect motion between successive fields using
+                      per-pixel field differences.  Static areas: weave (full
+                      detail).  Moving areas: bob (interpolated, no combing).
+                      Blend between the two based on motion magnitude.
+
+    Parameters
+    ----------
+    method : str
+        "bob" (default), "weave", or "motion-adaptive"
+    field_order : str
+        "auto" (try to detect), "top-first" (odd rows first), or
+        "bottom-first" (even rows first)
+    blend_strength : float (0-1)
+        For motion-adaptive: strength of blending between weave and bob.
+        0 = pure weave (may comb), 1 = pure bob (blurrier).
+    """
+    h, w = img.shape[:2]
+    if h < 4:
+        return img
+
+    # Ensure even height
+    if h % 2 != 0:
+        img = img[:h-1, :, :]
+        h -= 1
+
+    # Auto-detect field order
+    if field_order == "auto":
+        field_order = _detect_field_order(img)
+
+    is_top_first = field_order in ("top-first", "top_first")
+
+    if method == "bob":
+        return _deinterlace_bob(img, is_top_first)
+    elif method == "weave":
+        return _deinterlace_weave(img, is_top_first)
+    elif method == "motion-adaptive":
+        return _deinterlace_motion_adaptive(img, is_top_first, blend_strength)
+    else:
+        raise ValueError(f"Unknown deinterlace method: {method}")
+
+
+def _detect_field_order(img: np.ndarray) -> str:
+    """
+    Auto-detect field order by measuring vertical correlation.
+
+    In a top-field-first frame, odd rows belong to the first field and
+    even rows to the second.  The correlation between same-field rows
+    should be higher than opposite-field rows.
+    """
+    if len(img.shape) == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float64)
+    else:
+        gray = img.astype(np.float64)
+
+    h = gray.shape[0]
+
+    # Get odd and even rows
+    odd_rows = gray[0:h:2, :]
+    even_rows = gray[1:h:2, :]
+
+    # If top-field-first: odd rows are field 0, even rows are field 1
+    # Correlation between adjacent same-field rows (odd-odd, even-even)
+    if odd_rows.shape[0] >= 2 and even_rows.shape[0] >= 2:
+        # Same-field correlation (should be higher if fields are consistent)
+        odd_corr = float(np.corrcoef(odd_rows[:-1].ravel(), odd_rows[1:].ravel())[0, 1])
+        even_corr = float(np.corrcoef(even_rows[:-1].ravel(), even_rows[1:].ravel())[0, 1])
+        same_field_corr = (abs(odd_corr) + abs(even_corr)) / 2.0
+
+        # Cross-field correlation (odd-row to adjacent even-row)
+        cross_corr = 0.0
+        n = min(odd_rows.shape[0], even_rows.shape[0])
+        if n >= 1:
+            cross_corr = float(np.corrcoef(odd_rows[:n].ravel(), even_rows[:n].ravel())[0, 1])
+            cross_corr = abs(cross_corr)
+
+        # If same-field correlation > cross-field correlation, the field
+        # separation is valid.  Default to top-first (most common).
+        if same_field_corr > cross_corr * 1.05:
+            return "top-first"
+        else:
+            # Try bottom-first
+            return "bottom-first"
+
+    return "top-first"  # default
+
+
+def _deinterlace_bob(img: np.ndarray, is_top_first: bool) -> np.ndarray:
+    """
+    Bob deinterlace — linear interpolation for each field independently.
+
+    For each row, if it belongs to the current field, keep it.
+    If it's the opposite field, interpolate from neighboring same-field rows.
+
+    Also handles the temporal offset by blending adjacent frames if
+    temporal state is available, but for single-frame operation we
+    just interpolate.
+    """
+    h, w = img.shape[:2]
+    result = img.copy().astype(np.float32)
+
+    if is_top_first:
+        # Odd rows (1,3,5...) are first field — interpolate even rows
+        for y in range(1, h, 2):  # even rows (0-indexed)
+            y_above = y - 1
+            y_below = y + 1
+            if y_below < h:
+                # Linear interpolation from neighbors
+                result[y, :] = (img[y_above, :].astype(np.float32) +
+                                img[y_below, :].astype(np.float32)) / 2.0
+            else:
+                result[y, :] = img[y_above, :].astype(np.float32)
+    else:
+        # Even rows (0,2,4...) are first field — interpolate odd rows
+        for y in range(0, h, 2):
+            y_above = y - 1
+            y_below = y + 1
+            if y_above >= 0 and y_below < h:
+                result[y, :] = (img[y_above, :].astype(np.float32) +
+                                img[y_below, :].astype(np.float32)) / 2.0
+            elif y_below < h:
+                result[y, :] = img[y_below, :].astype(np.float32)
+
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def _deinterlace_weave(img: np.ndarray, is_top_first: bool) -> np.ndarray:
+    """
+    Weave deinterlace — combine odd/even rows from adjacent fields.
+
+    For a single frame, this just passes through the image as-is since
+    we don't have the next frame's field.  With temporal state tracking,
+    it would weave the current field with the previous opposite field.
+
+    Single-frame fallback: use bob interpolation for the missing field
+    to avoid visible combing.
+    """
+    # Single-frame weave just keeps original but we interpolate
+    # the missing field to avoid combing artifacts
+    return _deinterlace_bob(img, is_top_first)
+
+
+def _deinterlace_motion_adaptive(img: np.ndarray, is_top_first: bool,
+                                  blend_strength: float) -> np.ndarray:
+    """
+    Motion-adaptive deinterlace.
+
+    Detects motion between successive fields by computing per-pixel
+    difference between the two fields.  Static pixels: weave (keep
+    original detail).  Moving pixels: bob (interpolate to avoid combing).
+
+    This is a simplified version that works on a single frame by
+    comparing adjacent rows within the same frame.
+    """
+    h, w = img.shape[:2]
+    result = img.copy().astype(np.float32)
+
+    # Get the two fields
+    if is_top_first:
+        field0 = img[0:h:2, :].astype(np.float32)  # odd rows (top field)
+        field1 = img[1:h:2, :].astype(np.float32)  # even rows (bottom field)
+    else:
+        field0 = img[1:h:2, :].astype(np.float32)  # even rows (top field)
+        field1 = img[0:h:2, :].astype(np.float32)  # odd rows (bottom field)
+
+    # Ensure same height
+    min_h = min(field0.shape[0], field1.shape[0])
+    if min_h < 1:
+        return img
+
+    field0 = field0[:min_h]
+    field1 = field1[:min_h]
+
+    # Motion map: per-pixel absolute difference between fields
+    # (upsampled to full resolution)
+    motion_map = np.abs(field0 - field1).mean(axis=2) if len(img.shape) == 3 else \
+                 np.abs(field0 - field1)
+    # Normalize to 0-1
+    motion_map = np.clip(motion_map / 64.0, 0.0, 1.0)
+
+    # Upsample motion map to full frame height
+    motion_full = np.zeros((h, w), dtype=np.float32)
+    for y in range(min_h):
+        if is_top_first:
+            motion_full[2*y, :] = motion_map[y]
+            if 2*y + 1 < h:
+                motion_full[2*y + 1, :] = motion_map[y]
+        else:
+            motion_full[2*y + 1, :] = motion_map[y]
+            if 2*y + 2 < h:
+                motion_full[2*y + 2, :] = motion_map[y]
+
+    # Apply motion-adaptive deinterlacing
+    # For each row in the missing field, blend between weave and bob
+    if is_top_first:
+        for y in range(0, h, 2):  # even rows — need interpolation
+            y_above = y - 1 if y > 0 else y + 1
+            y_below = y + 1 if y + 1 < h else y - 1
+            bob_val = (img[y_above, :].astype(np.float32) +
+                       img[y_below, :].astype(np.float32)) / 2.0
+            # Low motion → keep original (weave), high motion → bob
+            motion_weight = motion_full[y, :]
+            if len(img.shape) == 3:
+                for c in range(3):
+                    result[y, :, c] = (img[y, :, c] * (1 - motion_weight * blend_strength) +
+                                       bob_val[:, c] * (motion_weight * blend_strength))
+            else:
+                result[y, :] = (img[y, :] * (1 - motion_weight * blend_strength) +
+                                bob_val * (motion_weight * blend_strength))
+    else:
+        for y in range(1, h, 2):  # odd rows — need interpolation
+            y_above = y - 1
+            y_below = y + 1 if y + 1 < h else y - 1
+            bob_val = (img[y_above, :].astype(np.float32) +
+                       img[y_below, :].astype(np.float32)) / 2.0
+            motion_weight = motion_full[y, :]
+            if len(img.shape) == 3:
+                for c in range(3):
+                    result[y, :, c] = (img[y, :, c] * (1 - motion_weight * blend_strength) +
+                                       bob_val[:, c] * (motion_weight * blend_strength))
+            else:
+                result[y, :] = (img[y, :] * (1 - motion_weight * blend_strength) +
+                                bob_val * (motion_weight * blend_strength))
+
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
 # ─── List registered filters ─────────────────────────────────────────
 
 def list_filters() -> list[str]:

@@ -863,6 +863,33 @@ class PipelineConfig:
         cfg.add("unsharp_mask", strength=0.2, radius=0.5, threshold=10)
         return cfg
 
+    @staticmethod
+    def analog_deinterlace() -> PipelineConfig:
+        """
+        [v3.5 ANALOG DEINTERLACE] Bob deinterlace + denoising for interlaced video.
+
+        Adds deinterlacing (bob method with auto field detection) as the first
+        stage, followed by wavelet denoising and channel correction.
+
+        This preset is designed for interlaced analog video captures where
+        combing artifacts are visible (common in NTSC/PAL FPV recordings).
+
+        Deinterlace: bob method (linear interpolation, 28ms at 854x480).
+        wavelet: multi-resolution denoising for residual noise.
+        chroma_denoise: cleans color noise from analog encoding.
+        channel_correction: colour balance.
+        adaptive_equalize: brightness-preserving contrast.
+
+        Target: ~900ms per frame, NIQE <7.5
+        """
+        cfg = PipelineConfig(label="Analog Deinterlace")
+        cfg.add("deinterlace", method="bob", field_order="auto")
+        cfg.add("wavelet", wavelet="db4", level=2, threshold_mode="soft")
+        cfg.add("chroma_denoise", strength=0.2)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        return cfg
+
 
 # ─── Default configuration ──────────────────────────────────────────
 

@@ -78,6 +78,8 @@ PRESETS: dict[str, PipelineConfig] = {
     "optimal-fast": PipelineConfig.optimal_fast(),
     "optimal-balanced": PipelineConfig.optimal_balanced(),
     "optimal-ultrafast": PipelineConfig.optimal_ultrafast(),
+    # ── v3.5 Deinterlace Preset ──────────────────────────────────
+    "analog-deinterlace": PipelineConfig.analog_deinterlace(),
 }
 
 # ─── Degrade modes ──────────────────────────────────────────────────
