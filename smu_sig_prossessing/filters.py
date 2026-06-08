@@ -813,6 +813,90 @@ def retinex_msrcp(img: np.ndarray,
     return (result * 255.0).astype(np.uint8)
 
 
+@register("retinex_msrcr")
+def retinex_msrcr(img: np.ndarray,
+                  sigma_list: list | None = None,
+                  weights: list | None = None,
+                  gain: float = 5.0,
+                  offset: float = 25.0,
+                  alpha: float = 125.0,
+                  beta: float = 46.0) -> np.ndarray:
+    """
+    Multi-Scale Retinex with Color Restoration (MSRCR).
+
+    Extends the standard MSR by applying a per-channel color restoration
+    factor C_c that prevents the gray-world desaturation problem common
+    in basic Retinex implementations.  The colour restoration function
+
+        C_c(x,y) = beta * [log(alpha * I_c(x,y) + 1)
+                           - log(sum(I_i(x,y) + 1))]
+
+    biases the output toward the original colour ratios, giving more
+    natural-looking results on faded or colour-shifted footage.
+
+    Algorithm
+    ---------
+      1. Convert BGR → float32 [0, 1]
+      2. Per-channel Multi-Scale Retinex (MSR):
+         For each channel c and each scale σ:
+           blur = GaussianBlur(channel_c, σ)
+           R_c += weight * (log(channel_c + 1) - log(blur + 1))
+      3. Color Restoration factor C_c per channel
+      4. R_msrcr_c = gain * C_c * R_c + offset
+      5. Clip to [0, 255] uint8
+
+    Parameters
+    ----------
+    sigma_list : list of float, optional
+        Spatial scales.  Default [15, 80, 250].
+    weights : list of float, optional
+        Weight per scale.  Must sum to 1.  Default equal weights.
+    gain : float, default 5.0
+        Final amplification.
+    offset : float, default 25.0
+        DC offset (positive = brighter output).
+    alpha : float, default 125.0
+        Non-linearity control in color restoration function.
+    beta : float, default 46.0
+        Color restoration strength.  Higher = stronger colour preservation.
+    """
+    if sigma_list is None:
+        sigma_list = [15.0, 80.0, 250.0]
+    n_scales = len(sigma_list)
+    if weights is None:
+        w = 1.0 / n_scales
+        weights = [w] * n_scales
+
+    # Convert BGR to float32 [0, 1]
+    img_f = img.astype(np.float32) / 255.0
+
+    # Per-channel MSR
+    small_val = 1e-12
+    msr = np.zeros_like(img_f, dtype=np.float32)
+    for c in range(3):
+        channel = img_f[:, :, c]
+        for sigma, weight in zip(sigma_list, weights):
+            blurred = cv2.GaussianBlur(channel, (0, 0), sigma)
+            diff = np.log(channel + small_val) - np.log(blurred + small_val)
+            msr[:, :, c] += weight * diff
+
+    # Color restoration factor C_c
+    sum_channels = img_f.sum(axis=2) + small_val  # Σ I_i per pixel
+    cr_factor = np.zeros_like(img_f, dtype=np.float32)
+    for c in range(3):
+        numerator = alpha * img_f[:, :, c] + 1.0
+        cr_factor[:, :, c] = np.log(numerator) - np.log(sum_channels)
+        # Clamp to prevent extreme values
+        cr_factor[:, :, c] = np.clip(cr_factor[:, :, c], 1.0, 5.0)
+
+    # MSRCR output
+    result = gain * cr_factor * msr + offset
+
+    # Clip and convert back to uint8 BGR
+    result = np.clip(result, 0.0, 255.0)
+    return result.astype(np.uint8)
+
+
 # ─── Phase 6: Patch-based Denoising ───────────────────────────────
 
 @register("patch_collaborative")

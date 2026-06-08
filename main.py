@@ -58,6 +58,9 @@ PRESETS: dict[str, PipelineConfig] = {
     "retinex-enhance": PipelineConfig.retinex_enhance(),
     "retinex-bm3d": PipelineConfig.retinex_bm3d(),
     "bm3d-fast": PipelineConfig.bm3d_fast(),
+    # ── MSRCR presets ──────────────────────────────────────────
+    "retinex-msrcr": PipelineConfig.retinex_msrcr_enhance(),
+    "retinex-bm3d-msrcr": PipelineConfig.retinex_bm3d_msrcr(),
 }
 
 # ─── Degrade modes ──────────────────────────────────────────────────

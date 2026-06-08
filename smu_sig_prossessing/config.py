@@ -218,6 +218,46 @@ class PipelineConfig:
         return cfg
 
     @staticmethod
+    def retinex_msrcr_enhance() -> PipelineConfig:
+        """
+        Retinex MSRCR illumination correction — color restoration variant.
+
+        Uses MSRCR instead of MSRCP for better colour preservation.
+        The color restoration factor prevents desaturation common in basic
+        Retinex, making this ideal for faded or colour-shifted footage
+        where the original hue ratios need to be maintained.
+
+        MSRCR → bilateral smooth → channel correction → CLAHE → unsharp.
+        """
+        cfg = PipelineConfig(label="Retinex MSRCR Enhance")
+        cfg.add("retinex_msrcr", sigma_list=[15, 80, 250],
+                weights=[1/3, 1/3, 1/3], gain=5.0, offset=25.0)
+        cfg.add("bilateral", d=7, sigma_color=50, sigma_space=50)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)
+        cfg.add("histogram_eq_clahe", clip_limit=2.0, tile_size=8)
+        cfg.add("unsharp_mask", strength=0.2, radius=0.5, threshold=5)
+        return cfg
+
+    @staticmethod
+    def retinex_bm3d_msrcr() -> PipelineConfig:
+        """
+        Retinex MSRCR + BM3D — best overall quality with color restoration.
+
+        median → BM3D → MSRCR → channel correction → unsharp.
+
+        MSRCR's color restoration gives more natural colours than MSRCP
+        while BM3D provides state-of-the-art denoising.
+        """
+        cfg = PipelineConfig(label="Retinex MSRCR + BM3D")
+        cfg.add("median", ksize=3)
+        cfg.add("bm3d_denoise", sigma=25, profile="np")
+        cfg.add("retinex_msrcr", sigma_list=[15, 80, 250],
+                weights=[1/3, 1/3, 1/3], gain=5.0, offset=25.0)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.15)
+        cfg.add("unsharp_mask", strength=0.3, radius=0.5, threshold=5)
+        return cfg
+
+    @staticmethod
     def bm3d_fast() -> PipelineConfig:
         """
         Fast BM3D preset — BM3D via bm3d_rgb + channel correction only.
