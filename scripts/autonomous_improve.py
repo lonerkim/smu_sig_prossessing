@@ -7,8 +7,9 @@ Outputs a short status report to stdout.
 import subprocess, sys, os, json, time, traceback
 from datetime import datetime
 
-os.chdir(os.path.expanduser("~/smu_sig_prossessing"))
-VENV = os.path.expanduser("~/smu_sig_prossessing/.venv/bin/python3")
+BASE = "/home/openclaw/smu_sig_prossessing"
+os.chdir(BASE)
+VENV = f"{BASE}/.venv/bin/python3"
 
 def run(cmd, timeout=120):
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
