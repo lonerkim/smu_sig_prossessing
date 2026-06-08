@@ -726,8 +726,8 @@ class PipelineConfig:
         v3.4 Benchmark: Score=57.59 (at strength=0.25)
         ΔE improvement: 13.16 → 11.11 (-15.6%)
         """
-        cfg = PipelineConfig(label="Grey Premium (57.20)")
-        cfg.add("grey_edge", strength=0.25, sigma_smooth=1.0)
+        cfg = PipelineConfig(label="Grey Premium (56.60)")
+        cfg.add("grey_edge", strength=0.22, sigma_smooth=1.0)
         cfg.add("temporal_nlm_multi", h=8, h_color=8, temporal_window=3, max_frames=5)
         cfg.add("guided_filter", radius=3, eps=50.0)
         cfg.add("chroma_denoise", strength=0.2)
