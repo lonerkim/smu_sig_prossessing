@@ -1677,6 +1677,165 @@ def adaptive_equalize(img: np.ndarray, clip_limit: float = 2.0,
     return result
 
 
+# ─── Phase 11: Color Constancy (Grey-Edge) ───────────────────────
+
+@register("grey_edge")
+def grey_edge_white_balance(img: np.ndarray, minkowski_norm: int = 1,
+                              sigma_smooth: float = 1.0,
+                              diff_order: int = 1,
+                              strength: float = 1.0) -> np.ndarray:
+    """
+    Grey-Edge color constancy — adaptive white balance using image derivatives.
+
+    Based on van de Weijer et al. (IEEE TIP 2007).  Estimates the scene
+    illuminant by taking the Minkowski norm of image derivatives, which
+    is more robust than simple grey-world assumptions and prevents
+    over-correction on uniform areas.
+
+    Algorithm:
+      1. Smooth the image with a Gaussian (sigma_smooth)
+      2. Compute image derivatives (diff_order=1: Sobel, =2: Laplacian)
+      3. For each channel, compute Minkowski p-norm of the derivative
+      4. Normalise to grey = (1/3, 1/3, 1/3) → per-channel gain
+      5. Apply gain with strength blending
+
+    Parameters
+    ----------
+    minkowski_norm : int (1 or 2)
+        Minkowski norm order.  1 = average of derivatives (Grey-Edge),
+        2 = RMS of derivatives (Shades-of-Grey variant).
+    sigma_smooth : float
+        Pre-smoothing sigma.  Higher = more global estimate.
+    diff_order : int (1 or 2)
+        Derivative order.  1 = first-order (Sobel), 2 = second-order (Laplacian).
+    strength : float (0–1)
+        How much correction to apply.  0 = no change, 1 = full correction.
+
+    Returns
+    -------
+    Colour-corrected BGR image.
+
+    References
+    ----------
+    J. van de Weijer, T. Gevers, A. Gijsenij, "Edge-Based Color Constancy",
+    IEEE Trans. Image Processing, 16(9), 2007.
+    """
+    img_f = img.astype(np.float32)
+    h, w = img.shape[:2]
+
+    # Smooth
+    smoothed = cv2.GaussianBlur(img_f, (0, 0), sigma_smooth)
+
+    # Compute per-channel derivative energy
+    channel_energy = []
+    for c in range(3):
+        ch = smoothed[:, :, c]
+        if diff_order == 1:
+            grad_x = cv2.Sobel(ch, cv2.CV_32F, 1, 0, ksize=3)
+            grad_y = cv2.Sobel(ch, cv2.CV_32F, 0, 1, ksize=3)
+            mag = np.sqrt(grad_x**2 + grad_y**2)
+        else:
+            mag = np.abs(cv2.Laplacian(ch, cv2.CV_32F, ksize=3))
+
+        # Minkowski p-norm
+        if minkowski_norm == 1:
+            energy = np.mean(mag)
+        else:
+            energy = np.sqrt(np.mean(mag**2))
+
+        channel_energy.append(max(energy, 1e-10))
+
+    # Normalise to grey-world
+    mean_energy = np.mean(channel_energy)
+    gains = np.array([mean_energy / e for e in channel_energy])
+
+    # Clamp to prevent extreme gains
+    gains = np.clip(gains, 0.5, 2.0)
+
+    # Blend with strength
+    gains = 1.0 + strength * (gains - 1.0)
+
+    # Apply
+    result = img_f.copy()
+    for c in range(3):
+        result[:, :, c] = img_f[:, :, c] * gains[c]
+
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+# ─── Phase 12: Domain Transform Edge-Preserving Filter ──────────
+
+@register("domain_transform")
+def domain_transform_filter(img: np.ndarray, sigma_s: float = 10.0,
+                             sigma_r: float = 0.15,
+                             n_iter: int = 3) -> np.ndarray:
+    """
+    Domain Transform edge-preserving filter — O(N) recursive filtering.
+
+    Based on Gastal & Oliveira (ACM TOG 2011).  Transforms the image into
+    a 1D domain where Euclidean distances approximate geodesic distances,
+    then applies recursive averaging.  Very fast (linear time) and produces
+    high-quality edge-preserving results without halos.
+
+    Algorithm per row/column:
+      1. Compute domain transform: integrate (1 + sigma_s/sigma_r * |I'|)
+      2. Apply recursive filtering: v'[i] = (1 - a) * v[i] + a * v'[i-1]
+         where a = exp(-sqrt(2) / sigma_s * |ct[i] - ct[i-1]|)
+
+    Parameters
+    ----------
+    sigma_s : float
+        Spatial standard deviation (in pixels).  Higher = smoother.
+    sigma_r : float (0–1)
+        Range standard deviation (normalised to 0–1).
+        Lower = more edge-preserving.
+    n_iter : int (1–4)
+        Number of iterations (more = stronger smoothing).
+
+    References
+    ----------
+    E. S. L. Gastal and M. M. Oliveira, "Domain Transform for Edge-Aware
+    Image and Video Processing", ACM TOG 30(4), 2011 (SIGGRAPH 2011).
+    """
+    img_norm = img.astype(np.float32) / 255.0
+    result = img_norm.copy()
+
+    for _ in range(n_iter):
+        # Horizontal pass
+        for y in range(result.shape[0]):
+            row = result[y, :, :]
+            ct = np.zeros(row.shape[0])
+            for x in range(1, row.shape[0]):
+                diff = np.sum(np.abs(row[x] - row[x-1])) / 3.0
+                ct[x] = ct[x-1] + 1.0 + (sigma_s / (sigma_r * 3.0 + 1e-10)) * diff
+            # Recursive filter forward
+            for x in range(1, row.shape[0]):
+                a = np.exp(-np.sqrt(2) / (sigma_s + 1e-10) * abs(ct[x] - ct[x-1]))
+                result[y, x] = (1 - a) * row[x] + a * result[y, x-1]
+            # Recursive filter backward
+            for x in range(row.shape[0] - 2, -1, -1):
+                a = np.exp(-np.sqrt(2) / (sigma_s + 1e-10) * abs(ct[x+1] - ct[x]))
+                result[y, x] = (1 - a) * result[y, x] + a * result[y, x+1]
+
+        # Vertical pass
+        for x in range(result.shape[1]):
+            col = result[:, x, :]
+            ct = np.zeros(col.shape[0])
+            for y in range(1, col.shape[0]):
+                diff = np.sum(np.abs(col[y] - col[y-1])) / 3.0
+                ct[y] = ct[y-1] + 1.0 + (sigma_s / (sigma_r * 3.0 + 1e-10)) * diff
+            # Recursive filter forward
+            for y in range(1, col.shape[0]):
+                a = np.exp(-np.sqrt(2) / (sigma_s + 1e-10) * abs(ct[y] - ct[y-1]))
+                result[y, x] = (1 - a) * col[y] + a * result[y-1, x]
+            # Recursive filter backward
+            for y in range(col.shape[0] - 2, -1, -1):
+                a = np.exp(-np.sqrt(2) / (sigma_s + 1e-10) * abs(ct[y+1] - ct[y]))
+                result[y, x] = (1 - a) * result[y, x] + a * result[y+1, x]
+
+    return np.clip(result * 255, 0, 255).astype(np.uint8)
+
+
 # ─── List registered filters ─────────────────────────────────────────
 
 def list_filters() -> list[str]:

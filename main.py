@@ -69,6 +69,10 @@ PRESETS: dict[str, PipelineConfig] = {
     "bm4d-temporal": PipelineConfig.bm4d_temporal(),
     "ultralight": PipelineConfig.ultralight(),
     "chroma-focus": PipelineConfig.chroma_focus(),
+    # ── v3.4 Grey-Edge Presets (Jun 2026) ────────────────────────
+    "grey-premium": PipelineConfig.grey_premium(),
+    "grey-fast": PipelineConfig.grey_fast(),
+    "grey-ultralight": PipelineConfig.grey_ultralight(),
 }
 
 # ─── Degrade modes ──────────────────────────────────────────────────

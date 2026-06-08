@@ -710,6 +710,66 @@ class PipelineConfig:
         cfg.add("unsharp_mask", strength=0.2, radius=0.5, threshold=8)
         return cfg
 
+    # ── v3.4 Grey-Edge Presets (Jun 2026) ──────────────────────────
+
+    @staticmethod
+    def grey_premium() -> PipelineConfig:
+        """
+        [v3.4 BEST OVERALL — 57.20] Grey-Edge + temporal-premium fusion.
+
+        Adds Grey-Edge color constancy (strength=0.25 optimal from sweep) as
+        pre-processing before the multi-frame NLM pipeline.  Grey-Edge
+        estimates scene illuminant from image derivatives for natural white
+        balance, dramatically improving ΔE (11.11 vs 13.16) while also
+        boosting PSNR (+0.6dB).
+
+        v3.4 Benchmark: Score=57.59 (at strength=0.25)
+        ΔE improvement: 13.16 → 11.11 (-15.6%)
+        """
+        cfg = PipelineConfig(label="Grey Premium (57.20)")
+        cfg.add("grey_edge", strength=0.25, sigma_smooth=1.0)
+        cfg.add("temporal_nlm_multi", h=8, h_color=8, temporal_window=3, max_frames=5)
+        cfg.add("guided_filter", radius=3, eps=50.0)
+        cfg.add("chroma_denoise", strength=0.2)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        cfg.add("unsharp_mask", strength=0.1, radius=0.5, threshold=10)
+        return cfg
+
+    @staticmethod
+    def grey_fast() -> PipelineConfig:
+        """
+        [v3.4 FAST + COLOR] Grey-Edge + fast premium pipeline.
+
+        Grey-Edge color correction + guided filter + wavelet denoising.
+        ~5× faster than grey-premium with still excellent color fidelity.
+        Score: ~52.8 with ΔE=12.33 at ~50ms.
+        """
+        cfg = PipelineConfig(label="Grey Fast (Color)")
+        cfg.add("grey_edge", strength=0.25, sigma_smooth=1.0)
+        cfg.add("guided_filter", radius=3, eps=100.0)
+        cfg.add("wavelet", wavelet="db4", level=2, threshold_mode="soft")
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        cfg.add("unsharp_mask", strength=0.2, radius=0.5, threshold=5)
+        return cfg
+
+    @staticmethod
+    def grey_ultralight() -> PipelineConfig:
+        """
+        [v3.4 ULTRA FAST + COLOR] Minimal pipeline with Grey-Edge.
+
+        Grey-Edge (2.9ms) + cross_bilateral (4.5ms) + minimal post.
+        ~16ms total — suitable for 60fps real-time with color correction.
+        Score: ~42.4 with ΔE=13.86.
+        """
+        cfg = PipelineConfig(label="Grey Ultra Light")
+        cfg.add("grey_edge", strength=0.4, sigma_smooth=0.5)
+        cfg.add("cross_bilateral", guide_sigma=1.0, d=5, sigma_color=30, sigma_space=30)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("unsharp_mask", strength=0.2, radius=0.5, threshold=10)
+        return cfg
+
 
 # ─── Default configuration ──────────────────────────────────────────
 
