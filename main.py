@@ -73,6 +73,11 @@ PRESETS: dict[str, PipelineConfig] = {
     "grey-premium": PipelineConfig.grey_premium(),
     "grey-fast": PipelineConfig.grey_fast(),
     "grey-ultralight": PipelineConfig.grey_ultralight(),
+    # ── v3.5 Optimized Presets (Jun 2026) ────────────────────────
+    "optimal-perceptual": PipelineConfig.optimal_perceptual(),
+    "optimal-fast": PipelineConfig.optimal_fast(),
+    "optimal-balanced": PipelineConfig.optimal_balanced(),
+    "optimal-ultrafast": PipelineConfig.optimal_ultrafast(),
 }
 
 # ─── Degrade modes ──────────────────────────────────────────────────
