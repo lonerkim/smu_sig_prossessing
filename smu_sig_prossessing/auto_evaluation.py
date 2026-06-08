@@ -30,6 +30,13 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 from datetime import datetime
 
+# NIQE integration — add scripts dir to path for standalone use
+import sys as _sys
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_scripts_dir = os.path.join(_project_root, "scripts")
+if _scripts_dir not in _sys.path:
+    _sys.path.insert(0, _scripts_dir)
+
 
 @dataclass
 class MetricResult:
@@ -78,14 +85,15 @@ class AutoEvaluator:
 
     # 가중치 (합=1.0) — 프로젝트 특성에 맞게 조정 가능
     WEIGHTS = {
-        "psnr": 0.1425,
-        "ssim": 0.1900,
-        "color_fidelity": 0.1425,
-        "edge_retention": 0.1425,
-        "noise_level": 0.1425,
-        "detail_recovery": 0.0950,
-        "artifact_score": 0.0950,
-        "vif": 0.0500,
+        "psnr": 0.1300,
+        "ssim": 0.1700,
+        "color_fidelity": 0.1300,
+        "edge_retention": 0.1300,
+        "noise_level": 0.1300,
+        "detail_recovery": 0.0850,
+        "artifact_score": 0.0850,
+        "vif": 0.0450,
+        "niqe": 0.0950,
     }
 
     def __init__(self, weights: dict | None = None):
@@ -290,6 +298,19 @@ class AutoEvaluator:
 
         return float(np.mean(scores))
 
+    def _niqe(self, img: np.ndarray, patch_size: int = 96,
+              stride: int = 48) -> float:
+        """
+        NIQE (Natural Image Quality Evaluator) — no-reference quality metric.
+        Lower = better perceptual quality. Natural images typically 2.5–4.5.
+
+        Computes MSCN (Mean Subtracted Contrast Normalized) coefficients,
+        extracts patch-level quality-aware features, and measures the
+        multivariate Gaussian distance to pristine natural scene statistics.
+        """
+        from calculate_niqe import compute_niqe
+        return compute_niqe(img, patch_size, stride)
+
     # ─── Composite Score ──────────────────────────────────────────
 
     def compute_composite(self, result: EvalResult) -> float:
@@ -324,6 +345,9 @@ class AutoEvaluator:
             elif m.name == "vif":
                 # 0~1 → 0~100 (theoretically can exceed 1, clamp at 100)
                 scores["vif"] = np.clip(m.value * 100, 0, 100)
+            elif m.name == "niqe":
+                # NIQE: 0~15 → 100~0 (lower is better, natural ~2.5-4.5)
+                scores["niqe"] = np.clip((1 - m.value / 15) * 100, 0, 100)
 
         total = 0.0
         for key, weight in self.WEIGHTS.items():
@@ -362,7 +386,7 @@ class AutoEvaluator:
             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
 
-        # 7개 메트릭 산출 (now 8 with VIF)
+        # 9개 메트릭 산출 (8 + NIQE)
         metrics = [
             MetricResult("psnr", self._psnr(origin, processed), "dB",
                          "Peak Signal-to-Noise Ratio", "higher"),
@@ -380,6 +404,8 @@ class AutoEvaluator:
                          "Ringing+blocking+overshoot score (lower=better)", "lower"),
             MetricResult("vif", self._vif(origin, processed), "",
                          "Visual Information Fidelity (higher=better)", "higher"),
+            MetricResult("niqe", self._niqe(processed), "score",
+                         "NIQE no-reference quality (lower=better)", "lower"),
         ]
 
         # degraded 노이즈 레벨도 참고용으로 추가

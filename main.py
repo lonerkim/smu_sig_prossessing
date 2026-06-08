@@ -202,6 +202,8 @@ def process_image(path: str, cfg: PipelineConfig,
 def process_video(path: str, cfg: PipelineConfig,
                   degrade_mode: str, strength: float,
                   sample_frames: int = 0,
+                  output_video: bool = False,
+                  preset_name: str = "",
                   adaptive_pipeline: 'AdaptivePipeline | None' = None) -> str | None:
     from smu_sig_prossessing.filters import reset_temporal_state
     reset_temporal_state()  # reset temporal filters before each video
@@ -219,6 +221,17 @@ def process_video(path: str, cfg: PipelineConfig,
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     name = os.path.splitext(os.path.basename(path))[0]
 
+    # ── Output video writer (used in both sample and full mode) ────
+    out_vid_writer = None
+    out_vid_path = None
+    if output_video:
+        p_name = preset_name or "default"
+        out_vid_path = os.path.join(BASE, "output", f"{name}_{p_name}.mp4")
+        os.makedirs(os.path.dirname(out_vid_path), exist_ok=True)
+        fourcc_out = cv2.VideoWriter_fourcc(*'mp4v')
+        out_vid_writer = cv2.VideoWriter(out_vid_path, fourcc_out, fps, (w, h))
+        print(f"  🎥 Output video enabled → {out_vid_path}")
+
     if sample_frames > 0:
         # ── Heuristic sample mode ──────────────────────────────────
         print(f"\n  📋 SAMPLE MODE: processing first {sample_frames} frame(s)")
@@ -232,6 +245,9 @@ def process_video(path: str, cfg: PipelineConfig,
                 restored = adaptive_pipeline.process(degraded)
             else:
                 restored = pl.apply_pipeline(degraded, cfg)
+            # Write to output video if enabled
+            if out_vid_writer is not None:
+                out_vid_writer.write(restored)
             # Save individual sample comparison
             samp_cmp = os.path.join(OUT_CMP, f"{name}_sample_{f_idx:03d}.png")
             save_comparison(frame, degraded, restored, samp_cmp)
@@ -245,6 +261,11 @@ def process_video(path: str, cfg: PipelineConfig,
             grid_path = os.path.join(OUT_CMP, f"{name}_sample_grid.png")
             _save_sample_grid(sample_comparisons, grid_path, (w, h))
             print(f"    Multi-frame grid → {grid_path}")
+
+        # Release output video writer
+        if out_vid_writer is not None:
+            out_vid_writer.release()
+            print(f"    Output video → {out_vid_path}")
 
         print(f"  ✅ Sample complete — {len(sample_comparisons)} frame(s)")
         return sample_comparisons[0] if sample_comparisons else None
@@ -276,6 +297,10 @@ def process_video(path: str, cfg: PipelineConfig,
             restored = pl.apply_pipeline(degraded, cfg)
         proc_writer.write(restored)
 
+        # Write to output video if enabled
+        if out_vid_writer is not None:
+            out_vid_writer.write(restored)
+
         count += 1
         if n_frames > 0 and count % 30 == 0:
             pct = count / n_frames * 100
@@ -284,6 +309,11 @@ def process_video(path: str, cfg: PipelineConfig,
     raw_writer.release()
     proc_writer.release()
     cap.release()
+
+    # Release output video writer
+    if out_vid_writer is not None:
+        out_vid_writer.release()
+        print(f"      output-video → {out_vid_path}")
 
     # Comparison from first frame
     cmp_path = None
@@ -368,6 +398,8 @@ def main():
                         help="Show all available filters and exit")
     parser.add_argument("--sample", type=int, default=0, metavar="N",
                         help="Process only N frames (video) for heuristic preview (default: full)")
+    parser.add_argument("--output-video", action="store_true",
+                        help="Write processed video to output/<input_name>_<preset>.mp4 (preserves FPS & resolution)")
 
     args = parser.parse_args()
 
@@ -432,6 +464,8 @@ def main():
     for f in videos:
         process_video(f, cfg, args.degrade, args.strength,
                       sample_frames=args.sample,
+                      output_video=args.output_video,
+                      preset_name=args.preset,
                       adaptive_pipeline=adaptive_pipe)
 
     print(f"\n✅ Done — {len(images) + len(videos)} file(s) processed.")
