@@ -950,3 +950,50 @@ run_auto_eval.py            — CLI 평가 도구 (--zip 지원)
 - `main.py`: 27 → 34 preset names
 - `run_v33_benchmark.py`: New benchmark script with slow-preset skip logic
 - 기존 BM3D는 8s/frame으로 실용성 부족 → BM4D가 6ms로 1000× 빠른 대체제
+
+---
+
+## v3.4 (2026-06-09 00:10~01:00) — Grey-Edge Color Constancy + 2h Auto Loop
+
+### 변경 개요
+
+**39개 필터** (+2), **38개 preset** (+3)로 확장.
+종합 점수 55.31 → **56.60** (+1.29, **+2.3% 향상**).
+
+### 신규 필터
+
+| 필터 | 설명 | 구현 |
+|------|------|------|
+| `grey_edge` | Grey-Edge color constancy — edge 기반 조명 추정 white balance | van de Weijer et al., IEEE TIP 2007 |
+
+### 신규 Preset
+
+| Preset | Score | PSNR | ΔE | Speed | 비고 |
+|--------|-------|------|-----|-------|------|
+| 🔵 **grey-premium** | **56.60** 🥇 | 19.20 | 11.53 | ~400ms | Grey-Edge + temporal-premium |
+| 🔵 **grey-fast** | **53.17** | 18.35 | 12.46 | ~200ms | Grey-Edge + guided + wavelet |
+| 🟢 **grey-ultralight** | **42.73** | 16.32 | 13.79 | **10ms** | 실시간 100fps + WB |
+
+### 핵심 발견: Grey-Edge Edge Color Constancy
+
+Grey-Edge를 denoising 전단에 pre-processing으로 추가하면:
+- **ΔE 13.57 → 11.53** (-15%, 눈에 띄는 색상 개선)
+- **PSNR 18.46 → 19.20** (+0.74dB)
+- Composite Score 54.18 → 56.60 (+2.42)
+
+강도(strength)=0.22 최적 (0.15~0.35 sweep 결과).
+너무 강하면 PSNR 하락, 너무 약하면 효과 미미.
+
+### 자동 개선 루프 구축
+
+- `scripts/iter_loop.py`: 2시간마다 benchmark + experiments + commit
+- `scripts/run_experiments.py`: Grey-Edge sweep + 신규 조합 테스트
+- Cron job `smu-sig-v34-loop`: 2시간마다, 10회 반복, 01:00 KST 시작
+
+### 아키텍처
+
+- `filters.py`: 37 → 39 filters (Phase 11: Grey-Edge CC)
+- `config.py`: 33 → 36 static presets (3 grey-edge presets)
+- `main.py`: 34 → 37 preset names
+- `scripts/iter_loop.py`: 자동 개선 루프
+- `scripts/run_experiments.py`: 파라미터 탐색 실험
