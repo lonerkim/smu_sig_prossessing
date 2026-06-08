@@ -47,12 +47,37 @@ ALL_PRESETS: dict[str, PipelineConfig] = {
     "tv-denoise": PipelineConfig.tv_denoise_preset(),
     "aniso-denoise": PipelineConfig.aniso_denoise(),
     "dct-denoise": PipelineConfig.dct_denoise(),
+    "st-video": PipelineConfig.spatial_temporal_video(),
     "optimized-fast": PipelineConfig.optimized_fast(),
     "optimized-quality": PipelineConfig.optimized_quality(),
     "max-quality": PipelineConfig.max_quality(),
     "video-enhanced": PipelineConfig.video_enhanced(),
     "aggressive": PipelineConfig.aggressive(),
     "research-best": PipelineConfig.research_best(),
+    # ── Analog presets ──
+    "analog-clean": PipelineConfig.analog_clean(),
+    "analog-heavy": PipelineConfig.analog_heavy(),
+    "adaptive": PipelineConfig.adaptive(),
+    # ── v3.2 presets ──
+    "video-ultra": PipelineConfig.video_ultra(),
+    "ntsc-plus": PipelineConfig.ntc_plus(),
+    "fast-premium": PipelineConfig.fast_premium(),
+    # ── BM3D / Retinex ──
+    "bm3d-denoise": PipelineConfig.bm3d_denoise(),
+    "retinex-enhance": PipelineConfig.retinex_enhance(),
+    "retinex-bm3d": PipelineConfig.retinex_bm3d(),
+    "bm3d-fast": PipelineConfig.bm3d_fast(),
+    "retinex-msrcr": PipelineConfig.retinex_msrcr_enhance(),
+    "retinex-bm3d-msrcr": PipelineConfig.retinex_bm3d_msrcr(),
+    # ── v3.3 New Presets (Jun 2026) ──
+    "super-premium": PipelineConfig.super_premium(),
+    "super-premium-fast": PipelineConfig.super_premium_fast(),
+    "rolling-premium": PipelineConfig.rolling_premium(),
+    "temporal-premium": PipelineConfig.temporal_premium(),
+    "temporal-ntsc": PipelineConfig.temporal_ntsc(),
+    "bm4d-temporal": PipelineConfig.bm4d_temporal(),
+    "ultralight": PipelineConfig.ultralight(),
+    "chroma-focus": PipelineConfig.chroma_focus(),
 }
 
 
