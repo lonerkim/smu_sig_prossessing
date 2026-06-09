@@ -3,15 +3,15 @@
 **기말 프로젝트 과제계획서**  
 **6팀 | 지능IoT융합전공 김승민 · 컴퓨터과학과 김원석**  
 **과목: 영상처리 기말 프로젝트**  
-**제출일: 2026년 5월 31일 (v2.0)**
+**제출일: 2026년 6월 9일 (v3.8)**
 
 ---
 
 ## 📋 문서 버전 정보
-- **버전**: v2.0 (모듈식 리팩토링 + NTSC 통합)
+- **버전**: v3.8 (최종 릴리즈)
 - **작성자**: 김승민, 김원석
-- **마지막 업데이트**: 2026-05-31
-- **상태**: ✅ v2.0 구현 완료
+- **마지막 업데이트**: 2026-06-09
+- **상태**: ✅ **v3.8 릴리즈 완료** (40 filters, 50 presets, 10 metrics)
 
 ---
 
@@ -29,13 +29,14 @@
 ### 프로젝트 목표
 본 프로젝트는 **저화질 영상에서 시인성을 해치는 잡음·색왜곡·대비저하를 수업에서 배운 영상처리 기법으로 완화**하는 범용 파이프라인을 설계·구현·평가하는 것을 목표로 한다.
 
-#### 구체적 목표 (v2.0 업데이트)
-1. ✅ **NTSC 아날로그 비디오 시뮬레이터(zhuker/ntsc) 통합** — 실제 NTSC 아티팩트(dot crawl, ringing, color bleeding, chroma noise)를 degradation에 활용
-2. ✅ **가우시안 로우패스 + 위너 필터 동시 사용 제거** — 위너 필터만 사용 (Gaussian LP는 제거)
-3. ✅ **필터 모듈화** — 각 파이프라인 단계를 ON/OFF 가능한 FilterConfig로 분리
-4. ✅ **De-blur / blur 최소화** — Unsharp Mask, Wiener Deconvolution, NLM, Bilateral 필터 추가
-5. ✅ **추가 연구 방법 적용** — NLM(Non-Local Means), Bilateral Filter, CLAHE, Unsharp Mask, Wiener Deconvolution
-6. ✅ **모듈식 파이프라인 아키텍처** — `smu_sig_prossessing/` 패키지로 구조화
+### 최종 성과 (v3.8)
+- 🎯 **40개 필터** (13 Phase) — median, wiener, NLM, bilateral, wavelet, BM3D/BM4D, guided filter, rolling guidance, Grey-Edge, deinterlace 등
+- 🚀 **50개 preset** — grey-premium (Composite 59.04), grey-guided-chroma (58.72, 11.7ms), chroma-focus (57.55)
+- 📊 **10개 평가 메트릭** — PSNR/SSIM/ΔE/Edge/Noise/Detail/Artifact/VIF/NIQE/BRISQUE
+- 🧠 **No-reference quality metrics** — NIQE best 7.23 (chroma-bior4-detail), BRISQUE best 34.04 (temporal-bior4)
+- ⚡ **실시간 처리** — ultralight 3.8ms (260fps), optimal-ultrafast 2.3ms (435fps)
+- 🎛️ **Adaptive pipeline** — Motion-aware branch selection (clean/low→fast, high→quality)
+- 🔄 **자동 개선 루프** — 2시간마다 benchmark + experiments + commit (cron)
 
 ---
 
@@ -44,14 +45,14 @@
 ### 2.1 데이터 유형
 
 #### Type A: 정량 평가용 실험 데이터
-- **목적**: PSNR/SSIM을 통한 정량적 성능 평가
+- **목적**: PSNR/SSIM/NIQE/BRISQUE 등 10종 메트릭 정량 평가
 - **구성**: 깨끗한 디지털 이미지 5종 + 인위적 열화 적용 (기본 + NTSC)
 - **특징**: 원본 영상 보존 → 처리 전후 비교 가능
 
 #### Type B: 실제 적용용 데이터
 - **목적**: 현실적인 영상 개선 효과 확인
-- **구성**: 실제 아날로그 FPV DVR 영상 프레임 (Google Drive 샘플)
-- **특징**: 실제 무선 전송 및 녹화 과정 거침
+- **구성**: 실제 아날로그 FPV DVR 영상 27개 비디오 (Google Drive 샘플)
+- **특징**: 다양한 카메라, 조명, 노이즈 레벨 (Laplacian var 296~9023)
 
 ### 2.2 인위 열화 유형
 
@@ -70,29 +71,44 @@
 
 ---
 
-## 3. 🔧 아키텍처 (v2.0)
+## 3. 🔧 아키텍처 (v3.8)
 
 ### 3.1 패키지 구조
 
 ```
-smu_sig_prossessing/
-├── __init__.py          # 패키지 임포트
-├── config.py            # PipelineConfig + FilterConfig (모듈식 설정)
-├── filters.py           # 필터 레지스트리 (median, wiener, nlm, bilateral, fft_notch, gamma, histeq, deblur, unsharp 등)
-├── pipeline.py          # 파이프라인 러너 (설정 기반 순차 실행)
-├── degradation.py       # 열화 모듈 (기본 + NTSC)
-├── evaluation.py        # 평가 유틸리티 (PSNR/SSIM, 비교 이미지, 히스토그램)
-└── ntsc_plugin.py       # zhuker/ntsc 카피 (ringPattern.npy 포함)
+smu_sig_prossessing/         — 핵심 패키지 (모듈식)
+├── __init__.py              — 패키지 임포트
+├── __main__.py              — python -m 진입점 (process/eval/list-filters)
+├── config.py                — PipelineConfig + FilterConfig (50개 preset)
+├── filters.py               — 필터 레지스트리 (40개 필터)
+├── pipeline.py              — 파이프라인 러너 (설정 기반 순차 실행)
+├── degradation.py           — 열화 모듈 (기본 + NTSC)
+├── evaluation.py            — PSNR/SSIM + 시각화
+├── auto_evaluation.py       — 자동 10메트릭 + Composite Score (NIQE/BRISQUE 포함)
+├── eval_viz.py              — 시각화 (radar/bar/grid/정성시트)
+├── adaptive.py              — Adaptive pipeline with motion detection
+└── ntsc_plugin.py           — zhuker/ntsc 카피 (ringPattern.npy 포함)
+
+calculate_niqe.py            — NIQE 독립 모듈 (patch-based MVG distance)
+main.py                      — CLI 진입점 (50개 preset 지원)
+run_v33_benchmark.py         — 통합 벤치마크 스크립트
+scripts/
+├── iter_loop.py             — 2시간 자동 개선 루프
+├── run_multi_video_benchmark.py — 5개 비디오 크로스 검증
+├── run_filter_interaction.py/v2/v3 — Filter interaction analysis
+├── iter9_batch_eval.py      — 27프레임 일괄 평가
+├── iter9_compare.py         — HTML 비교 페이지 생성
+└── ... (기타 실험 스크립트)
 ```
 
 ### 3.2 파이프라인 아키텍처
 
 ```
-┌─────────────┐    ┌──────────────┐    ┌───────────────────┐    ┌──────────────┐
-│  입력 영상   │───→│  열화 (NTSC  │───→│  모듈식 필터       │───→│  평가         │
-│ (Clean/DVR) │    │  + 기본)     │    │  PipelineConfig   │    │ PSNR/SSIM    │
-└─────────────┘    └──────────────┘    └───────────────────┘    └──────────────┘
-                                              │
+┌─────────────┐    ┌──────────────┐    ┌───────────────────┐    ┌──────────────────┐
+│  입력 영상   │───→│  열화 (NTSC  │───→│  모듈식 필터       │───→│  10메트릭 평가   │
+│ (Clean/DVR) │    │  + 기본)     │    │  PipelineConfig   │    │ PSNR/SSIM/NIQE/  │
+└─────────────┘    └──────────────┘    └───────────────────┘    │ BRISQUE/VIF/...  │
+                                              │                  └──────────────────┘
                                      ┌────────┴────────┐
                                      │  FilterConfig 1  │
                                      │  FilterConfig 2  │
@@ -105,100 +121,129 @@ smu_sig_prossessing/
 각 필터는 `FilterConfig(name, enabled, params)`로 독립적으로 제어:
 
 ```python
-cfg = PipelineConfig(label="Wiener Only")
-cfg.add("median", ksize=3)                # ON
-cfg.add("wiener", noise_var=625)          # ON
-cfg.add("fft_notch", enabled=False)       # OFF (주기적 잡음 없을 때)
-cfg.add("channel_correction")
-cfg.add("gamma", gamma=1.8)
-cfg.add("histogram_eq", mode="yuv")
+cfg = PipelineConfig(label="My Custom Pipeline")
+cfg.add("median", ksize=3)                 # ON
+cfg.add("guided_filter", radius=3, eps=100.0)  # ON
+cfg.add("wavelet", wavelet="db4", level=2) # ON
+cfg.add("grey_edge", strength=0.22)        # v3.4: Grey-Edge color constancy
+cfg.add("channel_correction")             # ON (default params)
+cfg.add("histogram_eq_clahe", enabled=False)  # OFF
 ```
 
-**Preset 파이프라인**:
-- `PipelineConfig.wiener_only()` — Wiener 중심 (권장)
-- `PipelineConfig.edge_preserving()` — NLM + Wiener (엣지 보존)
-- `PipelineConfig.aggressive()` — 강력한 denoising
-- `PipelineConfig.research_best()` — 모든 고급 기법 조합
+### 3.4 최종 Benchmark (test_small.jpg, basic 0.5)
 
-### 3.4 필터 레지스트리 (등록된 모든 필터)
+| # | Preset | Composite | PSNR | SSIM | Speed |
+|---|--------|-----------|------|------|-------|
+| 🥇 | **grey-premium** | **59.04** | 19.19 | 0.6263 | 171ms |
+| 🥈 | grey-guided-chroma | **58.72** | 19.10 | 0.6016 | **11.7ms** |
+| 🥉 | temporal-ntsc | **57.72** | 19.06 | 0.6160 | 170ms |
+| 4 | fast-guided-chroma | **57.57** | 19.05 | 0.6038 | **9.3ms** |
+| 5 | chroma-focus | **57.55** | 18.60 | 0.5966 | 35ms |
+| 6 | temporal-premium | **57.34** | 19.09 | 0.6479 | 157ms |
+| 7 | grey-fast | **57.33** | 19.00 | 0.6141 | 143ms |
+| 8 | chroma-guided-bior4 | **56.60** | 19.01 | 0.6246 | 141ms |
+| 9 | rolling-premium | **56.37** | 18.98 | 0.6821 | 35ms |
+| 10 | fast-premium | **55.95** | 18.32 | 0.5938 | 142ms |
 
-| 필터명 | 설명 | 파라미터 |
-|--------|------|----------|
-| median | 미디언 필터 (impulse 잡음) | ksize=3 |
-| gaussian_lowpass | 가우시안 로우패스 (참고용, 권장 X) | sigma=1.5 |
-| **wiener** | **위너 필터 (주파수 도메인, 권장)** | noise_var=625 |
-| nlm | Non-Local Means (엣지 보존 탁월) | h=10, template=7, search=21 |
-| bilateral | Bilateral Filter (엣지 보존 평활화) | d=9, sigma_color=75 |
-| fft_notch | FFT 노치 필터 (주기적 잡음) | threshold=99.5% |
-| gamma | 감마 보정 | gamma=1.8 |
-| log_transform | 로그 변환 | c=40 |
-| histogram_eq | 히스토그램 평활화 (YUV) | mode="yuv" |
-| histogram_eq_clahe | CLAHE (적응형 평활화) | clip_limit=2.0 |
-| channel_correction | RGB 채널 평균 보정 | clamp=0.7~1.3 |
-| **unsharp_mask** | **언샤프 마스크 (블러 복원)** | strength=1.0, radius=1.0 |
-| **deblur_wiener** | **위너 디컨볼루션 (디블러)** | kernel_size=5, noise_var=0.01 |
+No-reference metric 기준:
+- 🥇 **NIQE**: chroma-bior4-detail (**7.23**)
+- 🥇 **BRISQUE**: temporal-bior4 (**34.04**)
+- ⚡ **실시간**: ultralight (**3.8ms**, 260fps)
 
 ---
 
-## 4. 🎯 개선 사항 (v1.0 → v2.0)
+## 4. 🎯 개선 사항 (v1.0 → v3.8)
 
-| 항목 | v1.0 | v2.0 | 효과 |
+| 항목 | v2.0 | v3.8 | 효과 |
 |------|------|------|------|
-| **NTSC 열화** | 기본 합성 잡음만 | zhuker/ntsc 통합 | 실제 아날로그 아티팩트 재현 |
-| **가우시안 LP + 위너** | 둘 다 사용 | 위너만 사용 | 불필요한 블러 제거 |
-| **필터 모듈화** | 하드코딩 | PipelineConfig | ON/OFF 및 파라미터 조절 |
-| **디블러/블러 최소화** | 없음 | Unsharp Mask + Wiener Deconv | 복원 영상의 선명도 향상 |
-| **추가 연구 방법** | median, wiener, gauss | +NLM, Bilateral, CLAHE, Deblur | 더 다양한 방법 비교 가능 |
-| **비디오 평가** | 기본 파이프라인만 | 다중 파이프라인 비교 (Wiener, Edge, Research) | 정량/정성 평가 모두 가능 |
-| **코드 구조** | 단일 파일 2개 (717줄) | 모듈식 패키지 (8개 파일) | 유지보수성 향상 |
+| **필터 수** | 25개 | **40개** (+15) | 더 다양한 노이즈 유형 대응 |
+| **Preset 수** | 16개 | **50개** (+34) | 사용자 선택 폭 확대 |
+| **평가 메트릭** | PSNR/SSIM/ΔE/Edge/Noise/Detail/Artifact (7개) | **10개** (+VIF/NIQE/BRISQUE) | 무참조 품질 평가 가능 |
+| **NTSC 열화** | zhuker/ntsc 통합 | 유지 + NTSC 최적화 preset | 46→52점 (NTSC heavy) |
+| **Composite Score** | 51.56 (v3.3 baseline) | **59.04** (v3.8 grey-premium) | **+14.5% 향상** |
+| **에지 보존 필터링** | Bilateral, Guided | +Rolling Guidance, Domain Transform | 다양한 스케일 제어 |
+| **색상 보정** | Channel correction | +Grey-Edge Color Constancy | ΔE 13.6→11.5 (-15%) |
+| **비디오 처리** | Temporal average/motion | +Temporal NLM multi, BM4D, deinterlace | BRISQUE 65→59.9 (-8%) |
+| **Adaptive pipeline** | 없음 | Motion-aware branch selection | BRISQUE 61.8→60.2 |
+| **자동 개선** | 없음 | 2시간 cron loop + 실험 스크립트 | 지속적 성능 개선 |
 
 ---
 
-## 5. 📈 평가 계획
+## 5. 📈 평가 방법
 
-### 5.1 정량적 평가 (Quantitative)
-- **대상**: Google Photos 샘플 (1분) / 합성 테스트 영상
-- **지표**: PSNR, SSIM
-- **비교**: 각 파이프라인별 프레임 평균 PSNR/SSIM
-- **실행**: `python scripts/run_evaluation.py --quantitative <video>`
+### 5.1 정량적 평가 (Quantitative) — 10개 메트릭
+
+| 메트릭 | 단위 | 방향 | 설명 |
+|--------|------|------|------|
+| PSNR | dB | ↑ | Peak Signal-to-Noise Ratio |
+| SSIM | — | ↑ | Structural Similarity |
+| Color Fidelity | ΔE | ↓ | CIEDE2000 색차 |
+| Edge Retention | ratio | ↑ | Canny edge 비율 (1.0=원본 동일) |
+| Noise Level | Lap. var | ↓ | Laplacian 분산 |
+| Detail Recovery | ratio | ↑ | 고주파 에너지 보존율 |
+| Artifact Score | score | ↓ | Ringing+blocking+overshooting |
+| VIF | — | ↑ | Visual Information Fidelity |
+| NIQE | score | ↓ | Natural Image Quality Evaluator (0~20) |
+| BRISQUE | score | ↓ | Blind/Referenceless Image Spatial Quality Evaluator (0~100) |
+
+**Composite Score** = 가중 평균 (10개 메트릭 정규화 후 합산, range 0~100)
 
 ### 5.2 정성적 평가 (Qualitative)
-- **대상**: Google Drive 샘플 (1분) / 실제 DVR 영상
-- **방법**: 처리 전/후 이미지 나란히 비교 (4-way comparison)
+- **대상**: 실제 아날로그 FPV DVR 영상 27개
+- **방법**: 처리 전/후 이미지 나란히 비교 (iter9_comparison.html)
 - **분석**: NTSC 아티팩트 제거율, 색상 자연스러움, 엣지 보존 정도
-- **실행**: `python scripts/run_evaluation.py --qualitative <video>`
+- **도구**: `python run_auto_eval.py --qualitative-only`
 
 ---
 
 ## 6. 📋 실행 방법
 
 ```bash
-# 정적 이미지 파이프라인 (기본)
-python main.py
+# 기본 이미지 처리
+python main.py -p "input/*.jpg" --preset grey-premium
 
-# 비디오 파이프라인
-python main.py --video
+# 실제 아날로그 영상 처리 (degrade 없음)
+python main.py -p "input/analog_whoop_footage.mp4" --preset grey-premium --degrade none
+
+# 모든 preset 벤치마크
+python run_v33_benchmark.py
+
+# 특정 preset 자동 평가 (10 메트릭)
+python run_auto_eval.py -i input/test_small.jpg --presets grey-premium,chroma-focus
+
+# 다중 비디오 크로스 검증
+python scripts/run_multi_video_benchmark.py
 
 # 필터 목록 확인
 python main.py --list-filters
-
-# 정량적 평가 (비디오 필요)
-python scripts/run_evaluation.py --quantitative /path/to/video.mp4
-
-# 정성적 평가 (비디오 필요)
-python scripts/run_evaluation.py --qualitative /path/to/video.mp4
 ```
 
 ---
 
 ## 7. 📚 참고 자료
 
-### 외부 라이브러리
-- [NTSC 시뮬레이터 (zhuker/ntsc)](https://github.com/zhuker/ntsc) — 아날로그 비디오 시뮬레이션 (v2.0 통합)
-- [Composite Video Simulator](https://github.com/joncampbell123/composite-video-simulator) — 원본 Java 구현
+자세한 참고 문헌은 `docs/reference.md` 참조.
 
-### 추가 연구 기법
-- [Non-Local Means Denoising (OpenCV)](https://docs.opencv.org/master/d5/d69/tutorial_py_non_local_means.html)
-- [Bilateral Filter (OpenCV)](https://docs.opencv.org/master/d4/d86/group__imgproc__filter.html)
-- [CLAHE (Contrast Limited Adaptive Histogram Equalization)](https://docs.opencv.org/master/d5/daf/tutorial_py_histogram_equalization.html)
-- [Wiener Deconvolution (Wikipedia)](https://en.wikipedia.org/wiki/Wiener_deconvolution)
+### 외부 라이브러리
+- [OpenCV](https://opencv.org) — Apache 2.0 (영상 처리 기반)
+- [scikit-image](https://scikit-image.org) — BSD 3-Clause (TV denoising)
+- [PyWavelets](https://pywavelets.readthedocs.io) — MIT (웨이블릿 변환)
+- [BM3D/BM4D](https://github.com/meric7784/bm3d) — MIT (블록 매칭 필터링)
+- [BRISQUE](https://github.com/bukalapak/pybrisque) — MIT (무참조 품질 평가)
+- [NTSC 시뮬레이터 (zhuker/ntsc)](https://github.com/zhuker/ntsc) — MIT (아날로그 비디오 시뮬레이션)
+
+### 핵심 참고 논문
+- Buades et al. (2005) — Non-Local Means
+- Dabov et al. (2007) — BM3D
+- Tomasi & Manduchi (1998) — Bilateral Filter
+- He et al. (2010) — Guided Filter
+- Zhang et al. (2014) — Rolling Guidance Filter
+- van de Weijer et al. (2007) — Grey-Edge Color Constancy
+- Mittal et al. (2012/2013) — BRISQUE / NIQE
+- Perona & Malik (1990) — Anisotropic Diffusion
+- Rudin et al. (1992) — Total Variation
+
+### 프로젝트 문서
+- `docs/explanations.md` — 40개 필터 상세 설명 (원리/작동/구현)
+- `docs/reference.md` — 오픈소스 및 논문 레퍼런스
+- `plan/design_change_log.md` — 전체 설계 변경 이력
