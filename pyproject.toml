@@ -1,6 +1,6 @@
 [project]
 name = "smu-sig-prossessing"
-version = "3.7.0"
+version = "3.8.0"
 description = "아날로그 영상 잡음 완화 및 색 왜곡 보정 범용 파이프라인"
 readme = "README.md"
 requires-python = ">=3.11"
