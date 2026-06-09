@@ -993,6 +993,113 @@ class PipelineConfig:
         cfg.add("unsharp_mask", strength=0.15, radius=0.5, threshold=5)
         return cfg
 
+    # ── v3.7 Optimized Presets (Jun 2026 — Filter Interaction v3) ──
+
+    @staticmethod
+    def chroma_bior4_detail() -> PipelineConfig:
+        """
+        [v3.7 BEST NIQE=7.23] Chroma denoise → Bior4.4 wavelet → detail boost.
+
+        Based on filter interaction analysis v3: putting chroma_denoise BEFORE
+        wavelet achieves NIQE=7.23, beating optimal-bior4 (7.26). The chroma
+        pre-filter reduces color noise before wavelet processing, allowing the
+        wavelet to focus on luma noise without being distracted by chroma artifacts.
+
+        chroma_denoise: UV-channel pre-filtering (strength=0.5).
+        wavelet(bior4.4): multi-resolution denoising with 3 shifts.
+        detail_boost: edge-aware layer enhancement.
+        adaptive_equalize: brightness-preserving contrast.
+        unsharp_mask: final sharpness recovery.
+
+        Benchmark: NIQE=7.23 | BRISQUE=77.15 | 864ms.
+        """
+        cfg = PipelineConfig(label="Chroma→Bior4→Detail (NIQE=7.23)")
+        cfg.add("chroma_denoise", strength=0.5)
+        cfg.add("wavelet", wavelet="bior4.4", level=2, threshold_mode="soft", n_shifts=3)
+        cfg.add("detail_boost", strength=0.25, sigma_s=3.0, sigma_r=0.15, threshold=0.02)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        cfg.add("unsharp_mask", strength=0.1, radius=0.5, threshold=5)
+        return cfg
+
+    @staticmethod
+    def temporal_bior4() -> PipelineConfig:
+        """
+        [v3.7 BEST BRISQUE=53.52] Temporal NLM + Bior4.4 wavelet.
+
+        Combines multi-frame temporal denoising with biorthogonal wavelet
+        for the best BRISQUE score (53.52) while maintaining excellent
+        NIQE (7.43). The temporal NLM pre-filter removes temporal noise
+        before wavelet processing, dramatically improving perceptual quality.
+
+        temporal_nlm_multi: multi-frame NLM denoising (h=8, 5 frames).
+        wavelet(bior4.4): spatial denoising with 3 shifts.
+        chroma_denoise: gentle UV cleanup.
+        adaptive_equalize: brightness-preserving contrast.
+
+        Benchmark: NIQE=7.43 | BRISQUE=53.52 | 1426ms.
+        Best for: offline processing where perceptual quality is paramount.
+        """
+        cfg = PipelineConfig(label="Temporal+Bior4 (BRISQUE=53.5)")
+        cfg.add("temporal_nlm_multi", h=8, h_color=8, temporal_window=2, max_frames=5)
+        cfg.add("wavelet", wavelet="bior4.4", level=2, threshold_mode="soft", n_shifts=3)
+        cfg.add("chroma_denoise", strength=0.2)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        cfg.add("unsharp_mask", strength=0.1, radius=0.5, threshold=10)
+        return cfg
+
+    @staticmethod
+    def grey_guided_chroma() -> PipelineConfig:
+        """
+        [v3.7 FAST + BALANCED] Grey-Edge color correction + guided + chroma.
+
+        Combines Grey-Edge color constancy with guided filter and chroma
+        denoising for excellent color fidelity and good perceptual quality
+        at only 67ms.  Ideal for interactive/preview scenarios where both
+        speed and quality matter.
+
+        grey_edge: adaptive white balance via image derivatives.
+        guided_filter: edge-preserving smoothing.
+        chroma_denoise: UV-channel color noise.
+        adaptive_equalize: brightness-preserving contrast.
+
+        Benchmark: NIQE=7.56 | BRISQUE=55.38 | 67ms.
+        """
+        cfg = PipelineConfig(label="Grey+Guided+Chroma (67ms)")
+        cfg.add("grey_edge", strength=0.25, sigma_smooth=1.0)
+        cfg.add("guided_filter", radius=3, eps=100.0)
+        cfg.add("chroma_denoise", strength=0.4)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        cfg.add("unsharp_mask", strength=0.15, radius=0.5, threshold=5)
+        return cfg
+
+    @staticmethod
+    def chroma_guided_bior4() -> PipelineConfig:
+        """
+        [v3.7 BALANCED NIQE+BRISQUE] Chroma denoise → guided → bior4.4.
+
+        Three-stage cascade: chroma pre-filter removes color noise, guided
+        filter smooths edges, wavelet denoises residuals.  Excellent balance
+        of NIQE (7.59) and BRISQUE (55.60) at 752ms.
+
+        chroma_denoise: UV pre-filter (strength=0.5).
+        guided_filter: edge-preserving smooth (radius=3, eps=100).
+        wavelet(bior4.4): multi-resolution denoising with 3 shifts.
+        adaptive_equalize: brightness-preserving contrast.
+
+        Benchmark: NIQE=7.59 | BRISQUE=55.60 | 752ms.
+        """
+        cfg = PipelineConfig(label="Chroma→Guided→Bior4 (7.59/55.6)")
+        cfg.add("chroma_denoise", strength=0.5)
+        cfg.add("guided_filter", radius=3, eps=100.0)
+        cfg.add("wavelet", wavelet="bior4.4", level=2, threshold_mode="soft", n_shifts=3)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        cfg.add("unsharp_mask", strength=0.1, radius=0.5, threshold=10)
+        return cfg
+
 
 # ─── Default configuration ──────────────────────────────────────────
 

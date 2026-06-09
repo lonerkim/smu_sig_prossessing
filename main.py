@@ -85,6 +85,11 @@ PRESETS: dict[str, PipelineConfig] = {
     "fast-guided-chroma": PipelineConfig.fast_guided_chroma(),
     "nlm-chroma": PipelineConfig.nlm_chroma_preset(),
     "cross-chroma-detail": PipelineConfig.cross_chroma_detail(),
+    # ── v3.7 Optimized Presets (Filter Interaction v3 Jun 2026) ───
+    "chroma-bior4-detail": PipelineConfig.chroma_bior4_detail(),
+    "temporal-bior4": PipelineConfig.temporal_bior4(),
+    "grey-guided-chroma": PipelineConfig.grey_guided_chroma(),
+    "chroma-guided-bior4": PipelineConfig.chroma_guided_bior4(),
 }
 
 # ─── Degrade modes ──────────────────────────────────────────────────
