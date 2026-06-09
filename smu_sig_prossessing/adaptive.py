@@ -28,6 +28,12 @@ from .noise_estimator import (
     NoiseProfile,
 )
 from .pipeline import apply_pipeline
+from .noise_estimation import (
+    estimate_noise_level,
+    classify_noise,
+    suggest_preset,
+    suggest_params,
+)
 
 
 # ─── Temporal smoother ───────────────────────────────────────────────
@@ -122,6 +128,214 @@ class AdaptivePipeline:
         """Like ``process`` but also returns the NoiseProfile."""
         result = self.process(frame)
         return result, self._last_profile  # type: ignore[return-value]
+
+    def noise_aware_process(
+        self,
+        frame: np.ndarray,
+        prev_frame: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Analyse *frame*, estimate noise + motion, select a preset, adjust
+        parameters, apply the pipeline, and return (processed, metadata).
+
+        This is a self-contained convenience method that does not depend on
+        the internal ``NoiseEstimator`` — it uses the lightweight Laplacian-
+        based ``noise_estimation`` module for a fast per-frame estimate.
+
+        Parameters
+        ----------
+        frame : np.ndarray
+            Current BGR frame (uint8).
+        prev_frame : np.ndarray | None
+            Previous frame for motion detection.  ``None`` on the first call.
+
+        Returns
+        -------
+        processed : np.ndarray
+            Pipeline-processed frame.
+        metadata : dict
+            Diagnostic dictionary with keys:
+
+            - ``noise_std`` : float — estimated noise std dev
+            - ``noise_label`` : str — ``'low'/'medium'/'high'/'extreme'``
+            - ``motion`` : float — motion level (0-1)
+            - ``preset_name`` : str — selected preset name
+            - ``params`` : dict — parameter adjustments applied
+            - ``config_label`` : str — human-readable pipeline label
+        """
+        # ── 1. Estimate noise level ────────────────────────────────────
+        noise_std = estimate_noise_level(frame)
+        noise_label = classify_noise(noise_std)
+
+        # ── 2. Detect motion ───────────────────────────────────────────
+        if prev_frame is not None:
+            motion = self._detect_motion_from_pair(prev_frame, frame)
+        else:
+            motion = 0.0
+            # Initialise internal tracking for consistent state
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            self._prev_gray = gray
+
+        has_motion = motion > 0.4
+
+        # ── 3. Select preset name ──────────────────────────────────────
+        preset_name = suggest_preset(noise_std, has_motion=has_motion)
+
+        # ── 4. Get parameter adjustments ───────────────────────────────
+        param_adjustments = suggest_params(noise_std)
+
+        # ── 5. Build config from preset name ───────────────────────────
+        cfg = self._preset_from_name(preset_name)
+        if cfg is None:
+            # Fallback: use the regular estimator-based build
+            from .noise_estimator import NoiseEstimator
+
+            estimator = NoiseEstimator()
+            profile = estimator.estimate(frame)
+            cfg = self._build_config(profile)
+            preset_name = "estimator-fallback"
+
+        # Apply noise-based parameter overrides
+        self._apply_noise_params(cfg, param_adjustments)
+
+        # ── 6. Process and return ──────────────────────────────────────
+        processed = apply_pipeline(frame, cfg)
+
+        metadata: dict = {
+            "noise_std": round(noise_std, 2),
+            "noise_label": noise_label,
+            "motion": round(motion, 3),
+            "preset_name": preset_name,
+            "params": param_adjustments,
+            "config_label": cfg.label,
+        }
+
+        return processed, metadata
+
+    # ── Internal helpers for noise_aware_process ──────────────────────
+
+    @staticmethod
+    def _detect_motion_from_pair(
+        prev: np.ndarray,
+        curr: np.ndarray,
+    ) -> float:
+        """
+        Compute motion level (0-1) from two frames.
+
+        Pure static method — does not touch instance state so it can be
+        called before ``_prev_gray`` is initialised.
+        """
+        gray_prev = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        gray_curr = cv2.cvtColor(curr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        diff = np.mean(np.abs(gray_curr - gray_prev))
+        return float(np.clip(diff / 10.0, 0.0, 1.0))
+
+    @staticmethod
+    def _preset_from_name(name: str) -> PipelineConfig | None:
+        """
+        Resolve a preset *name* string to a ``PipelineConfig`` instance.
+
+        Returns ``None`` if the name is unknown (caller should fall back).
+        """
+        # Import here to avoid circular dependency at module level
+        from .config import PipelineConfig as PC
+
+        registry: dict[str, Any] = {
+            "optimal-ultrafast": PC.optimal_ultrafast,
+            "grey-guided-chroma": PC.grey_guided_chroma,
+            "grey-premium": PC.grey_premium,
+            "video-enhanced": PC.video_enhanced,
+            "fast-guided-chroma": PC.fast_guided_chroma,
+            "optimal-bior4": PC.optimal_bior4,
+            "nlm-chroma": PC.nlm_chroma_preset,
+            "cross-chroma-detail": PC.cross_chroma_detail,
+            "aggressive": PC.aggressive,
+            "fast-guided-chroma": PC.fast_guided_chroma,
+        }
+        builder = registry.get(name)
+        if builder is not None:
+            return builder()
+        return None
+
+    @staticmethod
+    def _apply_noise_params(
+        cfg: PipelineConfig,
+        params: dict,
+    ) -> None:
+        """
+        Mutate *cfg* in-place to apply noise-based parameter overrides.
+
+        The *params* dict is expected to come from ``suggest_params``.
+        Only known stage names are modified; unknown keys are silently
+        ignored.
+        """
+        for stage in cfg.stages:
+            if not stage.enabled:
+                continue
+
+            if stage.name == "median":
+                ksz = params.get("median_ksize", 0)
+                if ksz and ksz > 0:
+                    stage.enabled = True
+                    stage.params["ksize"] = int(ksz)
+                else:
+                    stage.enabled = False
+
+            elif stage.name == "wavelet":
+                if "wavelet_level" in params:
+                    stage.params["level"] = int(params["wavelet_level"])
+                if "wavelet_threshold_mode" in params:
+                    stage.params["threshold_mode"] = params["wavelet_threshold_mode"]
+
+            elif stage.name == "bilateral":
+                if "bilateral_sigma" in params:
+                    stage.params["sigma_color"] = params["bilateral_sigma"]
+                    stage.params["sigma_space"] = params["bilateral_sigma"]
+                if "bilateral_d" in params:
+                    d = int(params["bilateral_d"])
+                    stage.params["d"] = d if d % 2 == 1 else d + 1
+
+            elif stage.name == "cross_bilateral":
+                if "bilateral_sigma" in params:
+                    stage.params["sigma_color"] = params["bilateral_sigma"]
+                    stage.params["sigma_space"] = params["bilateral_sigma"]
+                if "bilateral_d" in params:
+                    d = int(params["bilateral_d"])
+                    stage.params["d"] = d if d % 2 == 1 else d + 1
+
+            elif stage.name == "nlm":
+                if "nlm_h" in params:
+                    stage.params["h"] = float(params["nlm_h"])
+
+            elif stage.name == "unsharp_mask":
+                if "unsharp_strength" in params:
+                    stage.params["strength"] = params["unsharp_strength"]
+
+            elif stage.name == "guided_filter":
+                if "guided_eps" in params:
+                    stage.params["eps"] = params["guided_eps"]
+
+            elif stage.name == "chroma_denoise":
+                if "chroma_strength" in params:
+                    stage.params["strength"] = params["chroma_strength"]
+
+            elif stage.name == "detail_boost":
+                if "detail_boost" in params:
+                    stage.params["strength"] = params["detail_boost"]
+
+            elif stage.name == "flicker_stabilize":
+                if "flicker_strength" in params:
+                    stage.params["strength"] = params["flicker_strength"]
+
+            elif stage.name == "temporal_motion":
+                if "temporal_strength" in params:
+                    stage.params["strength"] = params["temporal_strength"]
+
+            elif stage.name == "temporal_nlm_multi":
+                if "nlm_h" in params:
+                    h = params["nlm_h"]
+                    stage.params["h"] = h
+                    stage.params["h_color"] = h * 0.8
 
     @property
     def last_profile(self) -> NoiseProfile | None:

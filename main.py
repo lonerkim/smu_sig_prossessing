@@ -91,6 +91,9 @@ PRESETS: dict[str, PipelineConfig] = {
     "temporal-bior4": PipelineConfig.temporal_bior4(),
     "grey-guided-chroma": PipelineConfig.grey_guided_chroma(),
     "chroma-guided-bior4": PipelineConfig.chroma_guided_bior4(),
+    # ── Super-Resolution Presets ─────────────────────────────────────
+    "super-resolve": PipelineConfig.super_resolve(),
+    "enhanced-sr": PipelineConfig.enhanced_sr(),
 }
 
 # ─── Degrade modes ──────────────────────────────────────────────────

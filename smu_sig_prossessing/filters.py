@@ -2106,6 +2106,64 @@ def _deinterlace_motion_adaptive(img: np.ndarray, is_top_first: bool,
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
+# ─── Phase 8: Super Resolution ────────────────────────────────────────
+
+@register("super_resolve")
+def super_resolve_filter(img: np.ndarray, scale: float = 2.0,
+                         method: str = "lanczos") -> np.ndarray:
+    """
+    Upscale image by a factor using interpolation or DNN-based SR.
+
+    Parameters
+    ----------
+    scale : float
+        Upscaling factor (default 2.0).
+    method : str
+        Interpolation / SR method:
+          - 'lanczos' : cv2.INTER_LANCZOS4 (sharp, good quality)
+          - 'cubic'   : cv2.INTER_CUBIC (smoother, slightly softer)
+          - 'edsr'    : OpenCV DNN EDSR (requires model files, fallback to lanczos)
+
+    Returns
+    -------
+    np.ndarray
+        Upscaled image at new dimensions (H*scale, W*scale).
+    """
+    h, w = img.shape[:2]
+    new_w = int(round(w * scale))
+    new_h = int(round(h * scale))
+    dim = (new_w, new_h)
+
+    if method == "lanczos":
+        return cv2.resize(img, dim, interpolation=cv2.INTER_LANCZOS4)
+    elif method == "cubic":
+        return cv2.resize(img, dim, interpolation=cv2.INTER_CUBIC)
+    elif method == "edsr":
+        try:
+            sr = cv2.dnn_superres.DnnSuperResImpl_create()
+            # EDSR model files are not bundled — user must provide them.
+            # Try common paths for the model.
+            import os
+            model_path = os.path.join(
+                os.path.dirname(__file__), "models", f"EDSR_x{int(scale)}.pb"
+            )
+            if not os.path.exists(model_path):
+                model_path = f"EDSR_x{int(scale)}.pb"
+            sr.readModel(model_path)
+            sr.setModel("edsr", int(scale))
+            result = sr.upsample(img)
+            # DNN SR may return slightly different dimensions; ensure exact
+            if result.shape[:2] != (new_h, new_w):
+                result = cv2.resize(result, dim, interpolation=cv2.INTER_LANCZOS4)
+            return result
+        except Exception:
+            # Fallback to lanczos if EDSR unavailable
+            return cv2.resize(img, dim, interpolation=cv2.INTER_LANCZOS4)
+    else:
+        raise ValueError(f"Unknown super-resolve method: {method!r}. "
+                         f"Use 'lanczos', 'cubic', or 'edsr'.")
+
+
 # ─── List registered filters ─────────────────────────────────────────
 
 def list_filters() -> list[str]:

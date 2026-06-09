@@ -85,16 +85,17 @@ class AutoEvaluator:
 
     # 가중치 (합=1.0) — 프로젝트 특성에 맞게 조정 가능
     WEIGHTS = {
-        "psnr": 0.1150,
-        "ssim": 0.1500,
-        "color_fidelity": 0.1150,
-        "edge_retention": 0.1150,
-        "noise_level": 0.1150,
-        "detail_recovery": 0.0750,
-        "artifact_score": 0.0750,
+        "psnr": 0.1000,
+        "ssim": 0.1000,
+        "msssim": 0.0500,
+        "color_fidelity": 0.1100,
+        "edge_retention": 0.1100,
+        "noise_level": 0.1100,
+        "detail_recovery": 0.0700,
+        "artifact_score": 0.0700,
         "vif": 0.0400,
-        "niqe": 0.0850,
-        "brisque": 0.1150,
+        "niqe": 0.1000,
+        "brisque": 0.1400,
     }
 
     def __init__(self, weights: dict | None = None):
@@ -116,6 +117,15 @@ class AutoEvaluator:
         a_gray = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY) if len(a.shape) == 3 else a
         b_gray = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY) if len(b.shape) == 3 else b
         return float(structural_similarity(a_gray, b_gray, data_range=255))
+
+    def _msssim(self, a: np.ndarray, b: np.ndarray) -> float:
+        """MS-SSIM (Multi-Scale SSIM, 0~1). 높을수록 좋음."""
+        from sewar.full_ref import msssim
+        a_gray = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY) if len(a.shape) == 3 else a
+        b_gray = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY) if len(b.shape) == 3 else b
+        result = msssim(a_gray, b_gray)
+        # msssim returns a scalar float
+        return float(result)
 
     def _color_fidelity(self, origin: np.ndarray, processed: np.ndarray) -> float:
         """
@@ -355,6 +365,9 @@ class AutoEvaluator:
             elif m.name == "ssim":
                 # 0~1 → 0~100
                 scores["ssim"] = np.clip(m.value * 100, 0, 100)
+            elif m.name == "msssim":
+                # 0~1 → 0~100
+                scores["msssim"] = np.clip(m.value * 100, 0, 100)
             elif m.name == "color_fidelity":
                 # ΔE: 0~20 → 100~0 (낮을수록 좋음)
                 scores["color_fidelity"] = np.clip((1 - m.value / 20) * 100, 0, 100)
@@ -423,6 +436,8 @@ class AutoEvaluator:
                          "Peak Signal-to-Noise Ratio", "higher"),
             MetricResult("ssim", self._ssim(origin, processed), "",
                          "Structural Similarity Index", "higher"),
+            MetricResult("msssim", self._msssim(origin, processed), "",
+                         "Multi-Scale Structural Similarity Index", "higher"),
             MetricResult("color_fidelity", self._color_fidelity(origin, processed), "ΔE",
                          "CIEDE2000 color difference (lower=better)", "lower"),
             MetricResult("edge_retention", self._edge_retention(origin, processed), "ratio",
@@ -551,13 +566,14 @@ class AutoEvaluator:
         # Ranking
         lines.append("## Ranking")
         lines.append("")
-        lines.append("| # | Preset | Composite | PSNR | SSIM | ΔE | Edge | Noise | Detail | Artifact | VIF |")
-        lines.append("|---|--------|-----------|------|------|----|------|-------|--------|----------|-----|")
+        lines.append("| # | Preset | Composite | PSNR | SSIM | MS-SSIM | ΔE | Edge | Noise | Detail | Artifact | VIF |")
+        lines.append("|---|--------|-----------|------|------|---------|----|------|-------|--------|----------|-----|")
         for i, r in enumerate(results):
             m = {m.name: m.value for m in r.metrics}
             lines.append(
                 f"| {i+1} | {r.label} | **{r.composite_score:.1f}** | "
                 f"{m.get('psnr', 0):.2f} | {m.get('ssim', 0):.4f} | "
+                f"{m.get('msssim', 0):.4f} | "
                 f"{m.get('color_fidelity', 0):.2f} | {m.get('edge_retention', 0):.3f} | "
                 f"{m.get('noise_level', 0):.1f} | {m.get('detail_recovery', 0):.3f} | "
                 f"{m.get('artifact_score', 0):.2f} | {m.get('vif', 0):.4f} |"

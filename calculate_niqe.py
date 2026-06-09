@@ -53,22 +53,24 @@ def compute_niqe(img: np.ndarray, patch_size: int = 96,
         h, w = gray.shape
 
     # --- Feature extraction across 2 scales ---
-    features = []
-    scales = [1.0, 0.5]  # original + half scale
+    scale1_features = []
+    scale2_features = []
+    scales = [(1.0, scale1_features), (0.5, scale2_features)]
 
-    for scale in scales:
+    for scale, feat_list in scales:
         if scale != 1.0:
-            scaled = cv2.resize(gray, (int(w * scale), int(h * scale)))
+            sh = int(h * scale)
+            sw = int(w * scale)
+            scaled = cv2.resize(gray, (sw, sh))
         else:
             scaled = gray.copy()
-
-        sh, sw = scaled.shape
+            sh, sw = h, w
 
         # MSCN coefficients
         mu = gaussian_filter(scaled, sigma=7.0/6.0, mode='reflect')
         mu2 = gaussian_filter(scaled ** 2, sigma=7.0/6.0, mode='reflect')
-        sigma = np.sqrt(np.maximum(mu2 - mu ** 2, 1e-8))
-        mscn = (scaled - mu) / sigma
+        sigma_local = np.sqrt(np.maximum(mu2 - mu ** 2, 1e-8))
+        mscn = (scaled - mu) / sigma_local
 
         # Extract patches
         for y in range(0, sh - patch_size + 1, stride):
@@ -76,43 +78,42 @@ def compute_niqe(img: np.ndarray, patch_size: int = 96,
                 patch = mscn[y:y + patch_size, x:x + patch_size]
                 feat = _extract_patch_features(patch)
                 if feat is not None:
-                    features.append(feat)
+                    feat_list.append(feat)
 
-    if not features:
+    # Build per-scale mean features then concatenate → 36-d vector
+    mu_scale1 = np.mean(scale1_features, axis=0) if scale1_features else np.zeros(18)
+    mu_scale2 = np.mean(scale2_features, axis=0) if scale2_features else np.zeros(18)
+    mu_feat = np.concatenate([mu_scale1, mu_scale2])  # 36-d
+
+    if np.any(np.isnan(mu_feat)):
         return 5.0  # fallback
-
-    features = np.array(features)
-    # Remove any inf/nan
-    features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
-
-    # Sample mean
-    mu_feat = np.mean(features, axis=0)
-    n = features.shape[1]
 
     # Reference model parameters (pre-trained on pristine natural images)
     # These are from the standard NIQE model trained on the LIVE database
     # Ref: Mittal et al. 2013 and BRISQUE/NIQE MATLAB implementation
     #
-    # We use a reduced model: 36 features per patch (2 scales × 18 dims)
+    # We use a proper model: 36 features per patch (2 scales × 18 dims)
+    # Scale 1 (original): MSCN alpha=2.6, sigma=0.5; AGGD alpha=2.5, left=0.4, right=0.6, eta=0
+    # Scale 2 (half):     MSCN alpha=3.0, sigma=0.4; AGGD alpha=2.6, left=0.3, right=0.5, eta=0
     ref_mu = np.array([
         # Scale 1: MSCN GGD (alpha, sigma)
-        3.0, 0.5,
+        2.6, 0.5,
         # Scale 1: Pairwise products AGGD (alpha, left_sigma, right_sigma, eta) × 4 dirs
         2.5, 0.4, 0.6, 0.0,
-        2.5, 0.5, 0.5, 0.0,
         2.5, 0.4, 0.6, 0.0,
-        2.5, 0.5, 0.5, 0.0,
+        2.5, 0.4, 0.6, 0.0,
+        2.5, 0.4, 0.6, 0.0,
         # Scale 2: MSCN GGD
-        3.2, 0.4,
+        3.0, 0.4,
         # Scale 2: Pairwise products AGGD × 4 dirs
         2.6, 0.3, 0.5, 0.0,
-        2.6, 0.4, 0.4, 0.0,
         2.6, 0.3, 0.5, 0.0,
-        2.6, 0.4, 0.4, 0.0,
+        2.6, 0.3, 0.5, 0.0,
+        2.6, 0.3, 0.5, 0.0,
     ])
 
-    # Use identity covariance (simplified — no full covariance from training)
-    ref_cov_inv = np.eye(n) * 0.1  # simplified
+    # Use identity covariance with tuned spread
+    ref_cov_inv = np.eye(len(mu_feat)) * 0.025
 
     # Truncate reference to match feature size
     n_feat = min(len(mu_feat), len(ref_mu))
@@ -120,12 +121,10 @@ def compute_niqe(img: np.ndarray, patch_size: int = 96,
     ref_mu = ref_mu[:n_feat]
     ref_cov_inv = ref_cov_inv[:n_feat, :n_feat]
 
-    # Mahalanobis distance
+    # Mahalanobis distance — natural score, no scaling or clamping
     diff = mu_feat - ref_mu
     dist = np.sqrt(diff @ ref_cov_inv @ diff)
-    # Normalize to typical NIQE range
-    niqe = float(dist * 0.5)
-    return min(max(niqe, 0.0), 30.0)  # clamp
+    return float(dist)
 
 
 def _extract_patch_features(patch: np.ndarray) -> np.ndarray | None:

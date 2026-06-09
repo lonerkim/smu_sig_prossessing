@@ -1125,6 +1125,39 @@ class PipelineConfig:
         cfg.add("unsharp_mask", strength=0.1, radius=0.5, threshold=10)
         return cfg
 
+    # ── Phase 4: Super-Resolution Presets ────────────────────────────
+
+    @staticmethod
+    def super_resolve() -> PipelineConfig:
+        """
+        [SUPER-RESOLUTION] 2× Lanczos upscale only.
+        Pure upscaling with no denoising or enhancement — preserves original
+        appearance at higher resolution using Lanczos interpolation (sharpest
+        of the standard OpenCV methods).
+        """
+        cfg = PipelineConfig(label="Super Resolve (2× Lanczos)")
+        cfg.add("super_resolve", scale=2.0, method="lanczos")
+        return cfg
+
+    @staticmethod
+    def enhanced_sr() -> PipelineConfig:
+        """
+        [SUPER-RESOLUTION + ENHANCE] 2× Lanczos upscale + enhancement pipeline.
+
+        Upscales 2× via Lanczos, then applies:
+          - unsharp_mask : recovers edge sharpness after interpolation
+          - channel_correction : balances colour channels
+          - adaptive_equalize : CLAHE-based local contrast enhancement
+
+        Ideal for enlarging low-res analog footage while improving clarity.
+        """
+        cfg = PipelineConfig(label="Enhanced SR (2× + Unsharp + CLAHE)")
+        cfg.add("super_resolve", scale=2.0, method="lanczos")
+        cfg.add("unsharp_mask", strength=0.5, radius=1.0, threshold=5)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        return cfg
+
 
 # ─── Default configuration ──────────────────────────────────────────
 
