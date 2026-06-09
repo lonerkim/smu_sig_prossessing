@@ -80,6 +80,11 @@ PRESETS: dict[str, PipelineConfig] = {
     "optimal-ultrafast": PipelineConfig.optimal_ultrafast(),
     # ── v3.5 Deinterlace Preset ──────────────────────────────────
     "analog-deinterlace": PipelineConfig.analog_deinterlace(),
+    # ── v3.6 Optimized Presets (NIQE/BRISQUE Benchmark Jun 2026) ─
+    "optimal-bior4": PipelineConfig.optimal_bior4(),
+    "fast-guided-chroma": PipelineConfig.fast_guided_chroma(),
+    "nlm-chroma": PipelineConfig.nlm_chroma_preset(),
+    "cross-chroma-detail": PipelineConfig.cross_chroma_detail(),
 }
 
 # ─── Degrade modes ──────────────────────────────────────────────────

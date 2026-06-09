@@ -895,6 +895,105 @@ class PipelineConfig:
         return cfg
 
 
+    # ── v3.6 Optimized Presets (Jun 2026 — NIQE/BRISQUE Benchmark) ──
+
+    @staticmethod
+    def optimal_bior4() -> PipelineConfig:
+        """
+        [v3.6 BEST NIQE=7.26] Bior4.4 wavelet + detail boost + chroma denoise.
+
+        Based on filter interaction analysis v2: bior4.4 achieves NIQE=7.26,
+        beating optimal-balanced (7.28). Bior4.4 (biorthogonal 4.4) provides
+        better perceptual quality than db4 wavelet due to its linear phase
+        property and symmetric wavelet functions.
+
+        wavelet(bior4.4): multi-resolution denoising with 3 shifts for
+        translation invariance.
+        detail_boost: edge-aware layer enhancement.
+        chroma_denoise: UV-channel color noise reduction.
+        adaptive_equalize: brightness-preserving contrast.
+        unsharp_mask: final sharpness recovery.
+
+        Benchmark: NIQE=7.26 | BRISQUE=75.63 | 858ms.
+        """
+        cfg = PipelineConfig(label="Optimal Bior4 (NIQE=7.26)")
+        cfg.add("wavelet", wavelet="bior4.4", level=2, threshold_mode="soft", n_shifts=3)
+        cfg.add("detail_boost", strength=0.3, sigma_s=3.0, sigma_r=0.15, threshold=0.02)
+        cfg.add("chroma_denoise", strength=0.2)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        cfg.add("unsharp_mask", strength=0.1, radius=0.5, threshold=5)
+        return cfg
+
+    @staticmethod
+    def fast_guided_chroma() -> PipelineConfig:
+        """
+        [v3.6 FAST + BALANCED] Guided filter + chroma denoise.
+
+        Best speed+quality balance: NIQE=7.63, BRISQUE=55.42, 55.7ms.
+        Excellent BRISQUE (no-reference perceptual quality) combined with
+        fast execution makes this ideal for interactive/preview scenarios.
+
+        guided_filter: edge-preserving smoothing (radius=3, eps=100).
+        chroma_denoise: UV-channel color noise.
+        adaptive_equalize: brightness-preserving contrast.
+
+        Benchmark: NIQE=7.63 | BRISQUE=55.42 | 55.7ms.
+        """
+        cfg = PipelineConfig(label="Fast Guided+Chroma (BRISQUE=55.4)")
+        cfg.add("guided_filter", radius=3, eps=100.0)
+        cfg.add("chroma_denoise", strength=0.3)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        cfg.add("unsharp_mask", strength=0.15, radius=0.5, threshold=5)
+        return cfg
+
+    @staticmethod
+    def nlm_chroma_preset() -> PipelineConfig:
+        """
+        [v3.6 QUALITY NLM] NLM + chroma denoise.
+
+        NLM-based denoising with chroma cleanup.  Best NLM-based preset
+        with NIQE=7.33 and BRISQUE=62.64 at 682ms.
+
+        nlm: patch-based denoising (h=6, moderate).
+        chroma_denoise: UV-channel color noise.
+        adaptive_equalize: brightness-preserving contrast.
+
+        Benchmark: NIQE=7.33 | BRISQUE=62.64 | 682ms.
+        """
+        cfg = PipelineConfig(label="NLM+Chroma (NIQE=7.33)")
+        cfg.add("nlm", h=6, template_window=7, search_window=21)
+        cfg.add("chroma_denoise", strength=0.3)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        cfg.add("unsharp_mask", strength=0.15, radius=0.5, threshold=5)
+        return cfg
+
+    @staticmethod
+    def cross_chroma_detail() -> PipelineConfig:
+        """
+        [v3.6 FAST CROSS] Cross bilateral + chroma + detail boost.
+
+        Cross bilateral filtering + chroma denoise + detail_boost.
+        NIQE=7.35, BRISQUE=66.19, 160ms — fast quality combo.
+
+        cross_bilateral: joint bilateral filtering (fast single-pass).
+        detail_boost: edge-aware detail enhancement.
+        chroma_denoise: UV-channel color noise reduction.
+
+        Benchmark: NIQE=7.35 | BRISQUE=66.19 | 160ms.
+        """
+        cfg = PipelineConfig(label="Cross+Chroma+Detail (7.35/66.2)")
+        cfg.add("cross_bilateral", guide_sigma=1.0, d=5, sigma_color=30, sigma_space=30)
+        cfg.add("detail_boost", strength=0.3, sigma_s=3.0, sigma_r=0.15, threshold=0.02)
+        cfg.add("chroma_denoise", strength=0.3)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        cfg.add("unsharp_mask", strength=0.15, radius=0.5, threshold=5)
+        return cfg
+
+
 # ─── Default configuration ──────────────────────────────────────────
 
 DEFAULT_PIPELINE = PipelineConfig.edge_preserve()
