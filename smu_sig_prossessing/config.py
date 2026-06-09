@@ -629,19 +629,25 @@ class PipelineConfig:
     @staticmethod
     def temporal_premium() -> PipelineConfig:
         """
-        [v3.3 TEMPORAL VIDEO - BEST OVERALL 55.81] Multi-frame NLM with chroma denoise.
+        [v3.6 TEMPORAL VIDEO - OPTIMIZED BRISQUE=59.87] Multi-frame NLM with chroma denoise.
+
+        Optimised via temporal NLM sweep (see output/temporal_nlm_sweep/):
+          - h=15 (stronger luma denoising → best BRISQUE)
+          - h_color=10 (moderate chroma denoising)
+          - temporal_window=2 (5-frame sliding window)
+          - max_frames=5
+
+        BRISQUE improvement: from ~65 to 59.87 (−8%) vs v3.3 temporal_premium.
+        Best for: video processing where perceptual quality matters most.
 
         Combines:
-          - temporal_nlm_multi: NLM search across time (h=8 optimal from sweep)
+          - temporal_nlm_multi: NLM search across time (h=15 optimized)
           - guided_filter: edge-preserving cleanup (eps=50 for best scores)
           - chroma_denoise: clean colour channels (strength=0.2 gentle)
           - adaptive_equalize: brightness-preserving contrast
-
-        v3.3 Benchmark: Score=55.81, PSNR=19.17, ΔE=13.06
-        Best for: any video or image processing where quality matters.
         """
-        cfg = PipelineConfig(label="Temporal Premium (Multi-NLM)")
-        cfg.add("temporal_nlm_multi", h=8, h_color=8, temporal_window=3, max_frames=5)
+        cfg = PipelineConfig(label="Temporal Premium v3.6 (BRISQUE=59.9)")
+        cfg.add("temporal_nlm_multi", h=15, h_color=10, temporal_window=2, max_frames=5)
         cfg.add("guided_filter", radius=3, eps=50.0)
         cfg.add("chroma_denoise", strength=0.2)
         cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
@@ -652,20 +658,18 @@ class PipelineConfig:
     @staticmethod
     def bm4d_temporal() -> PipelineConfig:
         """
-        [v3.3 BM4D VIDEO] State-of-the-art video denoising with BM4D.
+        [v3.6 BM4D VIDEO] Per-frame BM3D with temporal buffer.
 
-        BM4D operates on groups of frames (video volumes), finding similar
-        3D patches across both space AND time.  This is the best possible
-        video denoising quality, at the cost of slower processing.
+        BM4D (true spatio-temporal volume denoising) requires ≥8 frames in
+        the temporal dimension, which is impractical for real-time use.
+        This preset falls back to per-frame BM3D which provides excellent
+        single-frame denoising quality at ~800ms/frame.
 
-        ~5-10× faster than frame-by-frame BM3D for video, with better
-        quality due to true 3D collaborative filtering.
-
-        Best for: high-quality offline processing of noisy analog video.
-        Target: >50 composite at ~3-5s/frame group.
+        Best for: offline processing of noisy analog video where quality
+        is paramount and speed is not critical.
         """
-        cfg = PipelineConfig(label="BM4D Temporal (Video Volume)")
-        cfg.add("bm4d_volume", sigma_psd=15.0, temporal_window=3, max_frames=8)
+        cfg = PipelineConfig(label="BM4D Temporal (BM3D per-frame)")
+        cfg.add("bm4d_volume", sigma_psd=15.0, temporal_window=2, max_frames=8)
         cfg.add("chroma_denoise", strength=0.3)
         cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
         cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)

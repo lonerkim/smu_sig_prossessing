@@ -1620,20 +1620,41 @@ def bm4d_volume_filter(img: np.ndarray,
         # Fallback: single-frame mild bilateral
         return cv2.bilateralFilter(img, 5, 30, 30)
 
-    # Build a 3D volume of the last N frames
-    volume = np.stack(buffer[-min(temporal_window * 2 + 1, len(buffer)):], axis=-1)
-    volume = volume.transpose(2, 0, 1, 3).astype(np.float64)  # (T, H, W, C)
+    # Build a 4D volume of the last N frames
+    # bm4d_multichannel expects (C, T, H, W) where C=3 for RGB
+    # Note: BM4D requires all dimensions >= block size (min 8).
+    # For small temporal windows we fall back to per-frame BM3D.
+    n_frames = min(temporal_window * 2 + 1, len(buffer))
+    
+    # Check if we have enough frames for BM4D (needs T >= 8)
+    if n_frames < 8:
+        # Fallback: per-frame BM3D on the latest frame
+        try:
+            from bm3d import bm3d_rgb
+            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            denoised_rgb = bm3d_rgb(rgb, sigma_psd=sigma_psd)
+            return cv2.cvtColor(np.clip(np.round(denoised_rgb), 0, 255).astype(np.uint8),
+                                cv2.COLOR_RGB2BGR)
+        except Exception:
+            return cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
+    
+    # Stack frames: (T, H, W, C) → transpose to (C, T, H, W)
+    volume = np.stack(buffer[-n_frames:], axis=0)  # (T, H, W, C)
+    volume = volume.transpose(3, 0, 1, 2).astype(np.float64)  # (C, T, H, W)
 
     try:
-        # BM4D on the volume
-        # Note: bm4d expects (T, H, W) for grayscale or (T, H, W, C) for color
-        denoised_vol = bm4d.bm4d(
+        # BM4D multichannel on the volume
+        # Use BM4DProfile2D for volumes with small temporal dimension (<16 frames)
+        from bm4d import BM4DProfile2D
+        profile = BM4DProfile2D()
+        profile.print_info = False
+        denoised_vol = bm4d.bm4d_multichannel(
             volume,
             sigma_psd=sigma_psd,
-            profile='np'  # Normal profile, both stages
+            profile=profile,
         )
-        # Return the latest frame from the denoised volume
-        return np.clip(np.round(denoised_vol[-1]), 0, 255).astype(np.uint8)
+        # Return the latest frame from the denoised volume (channel-last)
+        return np.clip(np.round(denoised_vol[:, -1].transpose(1, 2, 0)), 0, 255).astype(np.uint8)
     except Exception as e:
         # Fallback: single-frame denoising
         return cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)

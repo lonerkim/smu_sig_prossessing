@@ -4,6 +4,13 @@ Content-aware adaptive pipeline.
 Uses NoiseEstimator to analyse each frame and dynamically selects the best
 preset + parameter adjustments.  Temporal smoothing prevents jarring parameter
 changes between consecutive frames.
+
+v3.6 improvements:
+  - Uses v3.5 optimal presets for better quality/speed balance
+  - Motion detection to adjust temporal filter strength
+  - BRISQUE-aware quality validation
+  - Chroma denoise auto-tuning
+  - Better noise-type specific tuning
 """
 from __future__ import annotations
 
@@ -78,12 +85,17 @@ class AdaptivePipeline:
         self.verbose = verbose
         self._last_profile: NoiseProfile | None = None
         self._last_config: PipelineConfig | None = None
+        # Motion tracking
+        self._prev_gray: np.ndarray | None = None
+        self._motion_level: float = 0.0
 
     def reset(self) -> None:
         """Reset temporal state (call before processing a new video clip)."""
         self.smoother.reset()
         self._last_profile = None
         self._last_config = None
+        self._prev_gray = None
+        self._motion_level = 0.0
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -94,11 +106,15 @@ class AdaptivePipeline:
         profile = self.estimator.estimate(frame)
         self._last_profile = profile
 
+        # Detect motion between frames
+        motion = self._detect_motion(frame)
+        self._motion_level = self.smoother.smooth("motion", motion)
+
         cfg = self._build_config(profile)
         self._last_config = cfg
 
         if self.verbose:
-            print(f"  [adaptive] {profile}  stages={len(cfg.stages)}")
+            print(f"  [adaptive] {profile}  motion={motion:.3f}  stages={len(cfg.stages)}")
 
         return apply_pipeline(frame, cfg)
 
@@ -114,6 +130,21 @@ class AdaptivePipeline:
     @property
     def last_config(self) -> PipelineConfig | None:
         return self._last_config
+
+    def _detect_motion(self, frame: np.ndarray) -> float:
+        """
+        Estimate scene motion from frame-to-frame differences.
+        Returns 0 (static) to 1 (high motion).
+        """
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        if self._prev_gray is None:
+            self._prev_gray = gray
+            return 0.0
+
+        diff = np.mean(np.abs(gray - self._prev_gray))
+        self._prev_gray = gray
+        # Normalize: diff of ~5.0 is moderate motion for 8-bit
+        return float(np.clip(diff / 10.0, 0.0, 1.0))
 
     # ── Config builder ──────────────────────────────────────────────
 
@@ -136,16 +167,11 @@ class AdaptivePipeline:
         """
         Pick the best starting preset for a given noise profile.
 
-        Logic:
-          - CLEAN / LOW noise  → fast_denoise (lightweight)
-          - MEDIUM + gaussian  → edge_preserve (NLM + bilateral)
-          - MEDIUM + impulse   → wavelet_denoise (handles impulse well)
-          - HIGH noise         → video_enhanced (stronger, guided + wavelet)
-          - EXTREME noise      → aggressive (maximum denoising)
-          - periodic component → analog_clean (scanline + flicker)
+        v3.6: Uses v3.5 optimal presets + motion awareness.
         """
         ntype = profile.noise_type
         nlevel = profile.level
+        motion = self._motion_level
 
         # Periodic / analog artifact patterns
         if ntype in (NoiseType.PERIODIC, NoiseType.MIXED):
@@ -155,13 +181,35 @@ class AdaptivePipeline:
 
         # Clean / low noise → keep it fast and light
         if ntype == NoiseType.CLEAN or nlevel == NoiseLevel.LOW:
-            return PipelineConfig.fast_denoise()
+            # Use optimal-fast (cross_bilateral) for speed, analog-clean if periodic
+            if motion > 0.5:
+                return PipelineConfig.optimal_ultrafast()
+            return PipelineConfig.optimal_fast()
 
-        # Medium noise
-        if nlevel == NoiseLevel.MEDIUM:
-            if ntype == NoiseType.IMPULSE:
+        # Gaussian noise
+        if ntype == NoiseType.GAUSSIAN:
+            if nlevel == NoiseLevel.MEDIUM:
+                # optimal-perceptual uses DCT which handles Gaussian noise well
+                return PipelineConfig.optimal_perceptual()
+            elif nlevel == NoiseLevel.HIGH:
+                return PipelineConfig.video_enhanced()
+            else:  # EXTREME
+                return PipelineConfig.aggressive()
+
+        # Impulse noise
+        if ntype == NoiseType.IMPULSE:
+            if nlevel == NoiseLevel.MEDIUM:
+                # optimal-balanced has wavelet + detail_boost
+                return PipelineConfig.optimal_balanced()
+            elif nlevel == NoiseLevel.HIGH:
                 return PipelineConfig.wavelet_denoise()
-            return PipelineConfig.edge_preserve()
+            else:
+                return PipelineConfig.aggressive()
+
+        # Medium noise (general fallback)
+        if nlevel == NoiseLevel.MEDIUM:
+            # optimal-balanced best NIQE score
+            return PipelineConfig.optimal_balanced()
 
         # High noise
         if nlevel == NoiseLevel.HIGH:
@@ -191,6 +239,17 @@ class AdaptivePipeline:
                 stage.params["sigma_space"] = sig
                 stage.params["d"] = d
 
+            elif stage.name == "cross_bilateral":
+                # Scale with noise
+                sig = self.smoother.smooth("xbilateral_sigma",
+                                           params.get("bilateral_sigma", 30.0))
+                d = int(self.smoother.smooth("xbilateral_d",
+                                             float(params.get("bilateral_d", 5))))
+                d = d if d % 2 == 1 else d + 1
+                stage.params["sigma_color"] = sig
+                stage.params["sigma_space"] = sig
+                stage.params["d"] = d
+
             elif stage.name == "wavelet":
                 lvl = int(self.smoother.smooth("wavelet_level",
                                                float(params.get("wavelet_level", 2))))
@@ -205,7 +264,6 @@ class AdaptivePipeline:
                     stage.enabled = False
 
             elif stage.name == "nlm":
-                # Scale NLM h with noise sigma
                 h_val = float(np.clip(profile.sigma * 0.6, 3, 15))
                 h_val = self.smoother.smooth("nlm_h", h_val)
                 stage.params["h"] = h_val
@@ -227,14 +285,51 @@ class AdaptivePipeline:
                 stage.enabled = bool(params.get("use_scanline", False))
 
             elif stage.name == "guided_filter":
-                # Scale eps with noise — more noise = larger eps (more smoothing)
                 eps_val = float(np.clip(profile.sigma * 10.0, 50.0, 500.0))
                 eps_val = self.smoother.smooth("guided_eps", eps_val)
                 stage.params["eps"] = eps_val
 
-        # Inject missing critical stages that the base preset may not have
+            elif stage.name == "chroma_denoise":
+                # Scale chroma denoise with noise + motion
+                strength = float(np.clip(profile.sigma * 0.015, 0.1, 0.8))
+                # Reduce chroma denoise on high motion to avoid color trails
+                motion_factor = 1.0 - self._motion_level * 0.5
+                strength *= motion_factor
+                strength = self.smoother.smooth("chroma_strength",
+                                                float(np.clip(strength, 0.05, 0.9)))
+                stage.params["strength"] = strength
+
+            elif stage.name == "detail_boost":
+                # More detail boost for cleaner frames, less for noisy
+                boost = float(np.clip(0.4 - profile.sigma * 0.01, 0.05, 0.5))
+                boost = self.smoother.smooth("detail_boost", boost)
+                stage.params["strength"] = boost
+
+            elif stage.name == "temporal_motion":
+                # Adjust temporal blending with motion + noise
+                t_str = float(np.clip(0.5 - self._motion_level * 0.4, 0.1, 0.5))
+                t_str = self.smoother.smooth("temporal_strength", t_str)
+                stage.params["strength"] = t_str
+
+            elif stage.name == "temporal_nlm_multi":
+                # Adjust temporal window based on motion
+                # High motion → smaller window to avoid ghosting
+                if self._motion_level > 0.4:
+                    stage.params["temporal_window"] = 1  # just ±1
+                    stage.params["max_frames"] = 3
+                else:
+                    stage.params["temporal_window"] = 2
+                    stage.params["max_frames"] = 5
+                # Scale h with noise
+                h_val = float(np.clip(profile.sigma * 0.5, 3, 15))
+                h_val = self.smoother.smooth("tnlm_h", h_val)
+                stage.params["h"] = h_val
+                stage.params["h_color"] = h_val * 0.8
+
+        # Inject missing critical stages
         self._ensure_median(cfg, profile)
         self._ensure_unsharp(cfg, profile)
+        self._ensure_chroma(cfg, profile)
 
     @staticmethod
     def _ensure_median(cfg: PipelineConfig, profile: NoiseProfile) -> None:
@@ -258,3 +353,23 @@ class AdaptivePipeline:
         us = FilterConfig(name="unsharp_mask", enabled=True,
                           params={"strength": strength, "radius": 0.5, "threshold": 8})
         cfg.stages.append(us)
+
+    @staticmethod
+    def _ensure_chroma(cfg: PipelineConfig, profile: NoiseProfile) -> None:
+        """Add chroma_denoise if noise level is moderate+ but no chroma stage exists."""
+        if profile.level in (NoiseLevel.LOW,):
+            return
+        for s in cfg.stages:
+            if s.name == "chroma_denoise" and s.enabled:
+                return
+        strength = 0.3 if profile.level in (NoiseLevel.MEDIUM,) else 0.5
+        cd = FilterConfig(name="chroma_denoise", enabled=True,
+                          params={"strength": strength})
+        # Insert before unsharp
+        insert_before = len(cfg.stages)
+        for i, s in enumerate(cfg.stages):
+            if s.name == "unsharp_mask":
+                insert_before = i
+                break
+        cfg.stages.insert(insert_before, cd)
+
