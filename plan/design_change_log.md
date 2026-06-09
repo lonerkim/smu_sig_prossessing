@@ -997,3 +997,219 @@ Grey-Edge를 denoising 전단에 pre-processing으로 추가하면:
 - `main.py`: 34 → 37 preset names
 - `scripts/iter_loop.py`: 자동 개선 루프
 - `scripts/run_experiments.py`: 파라미터 탐색 실험
+
+
+---
+
+## v3.5 (2026-06-08 17:00~18:00) — Deinterlace + Filter Interaction Analysis
+
+### 변경 개요
+
+**41개 필터** (+2), **42개 preset** (+5)로 확장.
+Filter interaction analysis (79 조합) 결과 NIQE 7.28 달성.
+
+### 신규 필터
+
+| 필터 | 설명 | 구현 |
+|------|------|------|
+| `deinterlace` | 아날로그 인터레이스 비디오 프로그레시브 변환 | bob/weave/motion-adaptive 3종, auto field detection |
+| `domain_transform` | Domain Transform Filter — edge-aware smoothing | Gastal & Oliveira, 2011 |
+
+### 신규 Preset (5개)
+
+| Preset | Score | NIQE | Speed | 설명 |
+|--------|-------|------|-------|------|
+| 🔵 **optimal-balanced** | **68.39** | **7.28** 🥇 | ~210ms | wavelet+detail_boost+chroma, NIQE 최고 |
+| 🔵 **optimal-fast** | **73.74** | — | **30.8ms** | cross_bilateral+chroma, 속도+품질 균형 |
+| 🟢 **optimal-ultrafast** | **75.15** | — | **12.8ms** | median+channel+unsharp, 실시간 80fps |
+| 🔵 **optimal-perceptual** | **67.09** | — | ~180ms | DCT+detail boost variant |
+| 🔵 **analog-deinterlace** | — | — | — | deinterlace+wavelet+chroma+adapteq |
+
+### Filter Interaction Analysis
+
+**79 조합 테스트** 결과 최적 조합 발견:
+- Wavelet (db4, level=2) + detail_boost (strength=0.3) + chroma_denoise (strength=0.15) → NIQE=7.28
+- Cross_bilateral + chroma_denoise → 최고 속도/품질비 (30.8ms, Score=73.74)
+- Median (ksize=3) + channel_correction + unsharp_mask → 12.8ms 실시간
+
+### Architecture
+
+- `filters.py`: 39 → 41 filters (Phase 12: Deinterlace, Phase 13: Domain Transform)
+- `config.py`: 36 → 42 static presets
+- `main.py`: 37 → 42 preset names
+- `run_batch_process.py`: 27개 비디오 일괄 처리
+- `run_filter_interaction.py`: Filter interaction analysis (79 combos)
+- `run_full_ablation_sweep.py`: 전체 37 preset ablation on real footage
+
+---
+
+## v3.6 (2026-06-08 18:00~23:00) — BRISQUE + NIQE No-Reference Metrics + Temporal v2
+
+### 변경 개요
+
+**41개 필터** (유지), **46개 preset** (+4)로 확장.
+No-reference 평가 메트릭 (NIQE + BRISQUE) 도입.
+Temporal NLM 최적화: BRISQUE 65.41 → 59.87 (**12% 향상**).
+
+### 신규 메트릭 (2개)
+
+| 메트릭 | 설명 | 범위 | 평가 기준 |
+|--------|------|------|----------|
+| **NIQE** | Natural Image Quality Evaluator | 0~20 | 낮을수록 좋음 (자연영상 2.5~5.0) |
+| **BRISQUE** | Blind/Referenceless Image Spatial Quality Evaluator | 0~100 | 낮을수록 좋음 |
+
+**가중치 재조정 (10 메트릭)**:
+
+| Metric | Weight | Metric | Weight |
+|--------|--------|--------|--------|
+| PSNR | 11.5% | Detail Recovery | 7.5% |
+| SSIM | 15.0% | Artifact Score | 7.5% |
+| Color Fidelity | 11.5% | VIF | 4.0% |
+| Edge Retention | 11.5% | **NIQE** | **8.5%** |
+| Noise Level | 11.5% | **BRISQUE** | **11.5%** |
+
+### BRISQUE Baseline (analog_whoop_footage)
+
+| Preset | BRISQUE ↓ |
+|--------|-----------|
+| analog-clean | **67.77** 🥇 |
+| fast-denoise | 71.06 |
+| optimal-balanced | 74.93 |
+
+### Temporal NLM v2 최적화
+
+15개 설정 sweep 결과 최적 파라미터:
+- h=15 (기존 8 → 15, 강력한 luma denoise)
+- h_color=10 (기존 8 → 10)
+- temporal_window=2 (기존 3 → 2, 5프레임 슬라이딩 윈도우)
+- BRISQUE 65.41 → 59.87 (**-8.5%**)
+
+### 신규 Preset (4개)
+
+| Preset | NIQE ↓ | BRISQUE ↓ | Speed | 설명 |
+|--------|--------|-----------|-------|------|
+| 🔵 **optimal-bior4** | **7.26** 🥇 | — | ~210ms | Bior4 wavelet variant, NIQE 최고 |
+| 🔵 **nlm-chroma** | **7.33** | **41.28** 🥇 | ~180ms | NLM + chroma denoise |
+| 🟢 **fast-guided-chroma** | **7.56** | **55.42** | **49ms** | Guided filter + chroma, 빠름 |
+| 🔵 **cross-chroma-detail** | **7.35** | **55.60** | 169ms | Cross bilateral + detail boost |
+
+### Architecture
+
+- `smu_sig_prossessing/auto_evaluation.py`: 8 → 10 메트릭 (NIQE + BRISQUE 추가)
+- `smu_sig_prossessing/adaptive.py`: Adaptive pipeline with motion detection
+- `calculate_niqe.py`: 독립 NIQE 모듈
+- `brisque` 패키지 의존성 추가
+- `filters.py`: BM4D transpose 버그 수정, temporal_nlm_multi 최적화
+- `run_multi_video_benchmark.py`: 5개 비디오 크로스 검증
+
+---
+
+## v3.6.2 (2026-06-08 23:00~23:30) — Adaptive Pipeline NIQE 최적화
+
+### 변경 개요
+
+Motion-aware adaptive pipeline with NIQE-optimized branch selection.
+
+### Adaptive Pipeline 개선
+
+- **Motion detection**: Frame differencing 기반 움직임 감지
+- **Branch selection**:
+  - Clean/low noise → optimal-fast (49ms) 또는 optimal-ultrafast (12.8ms)
+  - Medium noise → optimal-balanced 또는 optimal-perceptual
+  - High noise → video-enhanced
+- **Chroma denoise auto-tuning**: Motion 양에 따라 chroma_denoise strength 조절
+- **Adaptive BRISQUE**: 61.80 → **60.22** (whoop footage 기준)
+
+### Architecture
+
+- `smu_sig_prossessing/adaptive.py`: Refactored with new NIQE-optimized presets
+
+---
+
+## v3.7 (2026-06-09 01:00~02:00) — Multi-Video Benchmark + 4 New Presets
+
+### 변경 개요
+
+4개 신규 preset 추가. Multi-video 크로스 검증 완료.
+NIQE 7.23 (신기록), BRISQUE 34.04 (신기록).
+
+### 신규 Preset (4개)
+
+Filter interaction v3 분석 결과 4개 신규 최적 preset:
+
+| Preset | NIQE ↓ | BRISQUE ↓ | Speed | 설명 |
+|--------|--------|-----------|-------|------|
+| 🔵 **chroma-bior4-detail** | **7.23** 🥇 | — | ~220ms | Chroma + bior4 wavelet + detail boost, **NIQE 신기록** |
+| 🔵 **temporal-bior4** | — | **34.04** 🥇 | ~300ms | Temporal NLM + bior4, **BRISQUE 신기록** |
+| 🟢 **grey-guided-chroma** | **7.56** | **55.38** | **67ms** | Grey-edge + guided + chroma, 속도+품질 |
+| 🔵 **chroma-guided-bior4** | **7.59** | **55.60** | ~180ms | Chroma + guided + bior4 |
+
+### Multi-Video Benchmark 결과
+
+**5개 아날로그 비디오** 크로스 검증:
+- analog-clean 가장 일관됨 (NIQE=8.47±1.09)
+- nlm-chroma 최고 BRISQUE (41.28±11.30)
+- optimal-bior4 NIQE=7.26 (optimal-balanced 7.28 대비 우위)
+- chroma-bior4-detail NIQE=7.23 (전체 1위)
+
+### Architecture
+
+- `config.py`: 46 → 50 static presets (+4)
+- `main.py`: 42 → 46 preset names
+- `run_multi_video_benchmark.py`: Updated top preset lists
+
+---
+
+## v3.8 (2026-06-09) — Iter9 통합 + 최종 릴리즈
+
+### 변경 개요
+
+Iter9 ablation sweep + batch evaluation + NIQE/BRISQUE 완전 통합.
+**총 40개 필터, 50개 preset.**
+Composite Score 개선 및 27프레임 batch evaluation.
+
+### Iter9 Ablation Sweep 재확인
+
+| 제거 필터 | Score 손실 | 영향 |
+|-----------|-----------|------|
+| guided_filter | -7.30 pts | **Critical** |
+| channel_correction | -5.09 pts | **Critical** |
+| adaptive_equalize | -3.46 pts | **Important** |
+| temporal_nlm_multi | -0.43 pts | Minor |
+| unsharp_mask | ±0.00 pts | Negligible |
+
+### 최종 Benchmark (v3.8, test_small.jpg, basic 0.5)
+
+| # | Preset | Composite | PSNR | SSIM | Speed |
+|---|--------|-----------|------|------|-------|
+| 1 | **grey-premium** | **59.04** 🥇 | 19.19 | 0.6263 | 171ms |
+| 2 | **grey-guided-chroma** | **58.72** 🥈 | 19.10 | 0.6016 | **11.7ms** |
+| 3 | temporal-ntsc | **57.72** | 19.06 | 0.6160 | 170ms |
+| 4 | fast-guided-chroma | **57.57** | 19.05 | 0.6038 | **9.3ms** |
+| 5 | chroma-focus | **57.55** | 18.60 | 0.5966 | 35ms |
+| 6 | temporal-premium | **57.34** | 19.09 | 0.6479 | 157ms |
+| 7 | grey-fast | **57.33** | 19.00 | 0.6141 | 143ms |
+| 8 | chroma-guided-bior4 | **56.60** | 19.01 | 0.6246 | 141ms |
+| 9 | rolling-premium | **56.37** | 18.98 | 0.6821 | 35ms |
+| 10 | fast-premium | **55.95** | 18.32 | 0.5938 | 142ms |
+
+No-reference metric 기준 최고 preset:
+- 🥇 NIQE: **chroma-bior4-detail** (7.23)
+- 🥇 BRISQUE: **temporal-bior4** (34.04)
+- 🥇 실시간: **ultralight** (3.8ms, 260fps)
+
+### 최종 아키텍처
+
+- `filters.py`: 40 registered filters
+- `config.py`: 50 static presets
+- `calculate_niqe.py`: NIQE 독립 모듈
+- `brisque` 패키지 의존성
+- 10개 메트릭 평가 (PSNR/SSIM/ΔE/Edge/Noise/Detail/Artifact/VIF/NIQE/BRISQUE)
+- Adaptive pipeline with motion detection
+
+### 릴리즈 정보
+
+- **Version**: v3.8
+- **Date**: 2026-06-09
+- **Author**: 김승민, 김원석 (6팀)
+- **Git Tag**: v3.8

@@ -66,6 +66,7 @@ PRESETS: dict[str, PipelineConfig] = {
     "super-premium-fast": PipelineConfig.super_premium_fast(),
     "rolling-premium": PipelineConfig.rolling_premium(),
     "temporal-premium": PipelineConfig.temporal_premium(),
+    "temporal-ntsc": PipelineConfig.temporal_ntsc(),
     "bm4d-temporal": PipelineConfig.bm4d_temporal(),
     "ultralight": PipelineConfig.ultralight(),
     "chroma-focus": PipelineConfig.chroma_focus(),

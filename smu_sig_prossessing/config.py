@@ -656,6 +656,31 @@ class PipelineConfig:
         return cfg
 
     @staticmethod
+    def temporal_ntsc() -> PipelineConfig:
+        """
+        [Iter9 NTSC OPTIMIZED] Temporal NLM optimized for NTSC-heavy footage.
+
+        Uses lower h (h=4 from Iter9 sweep) for better NTSC performance.
+        Stronger chroma_denoise to handle NTSC chroma artifacts.
+        Combines:
+          - temporal_nlm_multi: NLM with h=4 (optimal for NTSC)
+          - guided_filter: edge-preserving cleanup
+          - chroma_denoise: stronger chroma cleanup for NTSC color artifacts
+          - adaptive_equalize: brightness-preserving contrast
+
+        Iter9 NTSC sweep: h=4 gives 46.98 vs h=8 gives 46.75 (on 400px test)
+        Best for: NTSC-heavy analog video with color noise and artifacts.
+        """
+        cfg = PipelineConfig(label="Temporal NTSC (h=4+Chroma)")
+        cfg.add("temporal_nlm_multi", h=4, h_color=4, temporal_window=3, max_frames=5)
+        cfg.add("guided_filter", radius=3, eps=50.0)
+        cfg.add("chroma_denoise", strength=0.5)
+        cfg.add("channel_correction", clamp_min=0.85, clamp_max=1.25)
+        cfg.add("adaptive_equalize", clip_limit=1.5, tile_size=8, brightness_preserve=0.4)
+        cfg.add("unsharp_mask", strength=0.1, radius=0.5, threshold=10)
+        return cfg
+
+    @staticmethod
     def bm4d_temporal() -> PipelineConfig:
         """
         [v3.6 BM4D VIDEO] Per-frame BM3D with temporal buffer.
