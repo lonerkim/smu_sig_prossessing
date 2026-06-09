@@ -35,17 +35,22 @@ evaluator = AutoEvaluator()
 
 # Top presets to evaluate (by NIQE, BRISQUE, and balance)
 TOP_PRESETS = [
-    # NIQE-focused
+    # NIQE-focused (v3.7 new best)
+    "chroma-bior4-detail",
     "optimal-bior4",
     "optimal-balanced",
     "nlm-chroma",
     "analog-clean",
     "cross-chroma-detail",
-    # BRISQUE-focused
+    # BRISQUE-focused (v3.7 new best)
+    "temporal-bior4",
     "chroma-focus",
     "fast-guided-chroma",
     "grey-premium",
     "temporal-premium",
+    # Balance presets (v3.7 new)
+    "grey-guided-chroma",
+    "chroma-guided-bior4",
     # Fast + quality
     "bm4d-temporal",
     "fast-denoise",
