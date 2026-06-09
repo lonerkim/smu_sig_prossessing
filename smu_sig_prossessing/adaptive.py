@@ -167,55 +167,77 @@ class AdaptivePipeline:
         """
         Pick the best starting preset for a given noise profile.
 
-        v3.6: Uses v3.5 optimal presets + motion awareness.
+        v3.6.2: Updated to use v3.6 optimized presets (optimal-bior4 NIQE=7.26,
+        nlm-chroma BRISQUE=41.28, fast-guided-chroma BRISQUE=55.42@49ms,
+        cross-chroma-detail NIQE=7.35@169ms).  Motion-aware selection
+        switches between fast and quality branches.
         """
         ntype = profile.noise_type
         nlevel = profile.level
         motion = self._motion_level
 
-        # Periodic / analog artifact patterns
+        # Periodic / analog artifact patterns — need scanline+flicker removal
         if ntype in (NoiseType.PERIODIC, NoiseType.MIXED):
             if nlevel in (NoiseLevel.HIGH, NoiseLevel.EXTREME):
                 return PipelineConfig.analog_heavy()
+            # For moderate periodic noise, use analog-clean (most consistent)
+            if motion > 0.5:
+                return PipelineConfig.analog_clean()
             return PipelineConfig.analog_clean()
 
-        # Clean / low noise → keep it fast and light
+        # Clean / low noise → keep it fast
         if ntype == NoiseType.CLEAN or nlevel == NoiseLevel.LOW:
-            # Use optimal-fast (cross_bilateral) for speed, analog-clean if periodic
             if motion > 0.5:
-                return PipelineConfig.optimal_ultrafast()
-            return PipelineConfig.optimal_fast()
+                return PipelineConfig.optimal_ultrafast()  # 10ms, 80fps+
+            return PipelineConfig.fast_guided_chroma()  # 49ms, best BRISQUE balance
 
-        # Gaussian noise
+        # Gaussian noise — DCT and wavelet handle this well
         if ntype == NoiseType.GAUSSIAN:
             if nlevel == NoiseLevel.MEDIUM:
-                # optimal-perceptual uses DCT which handles Gaussian noise well
-                return PipelineConfig.optimal_perceptual()
+                # optimal-bior4 has best NIQE (7.26) for general use
+                if motion > 0.5:
+                    return PipelineConfig.cross_chroma_detail()  # 169ms
+                return PipelineConfig.optimal_bior4()
             elif nlevel == NoiseLevel.HIGH:
-                return PipelineConfig.video_enhanced()
+                if motion > 0.5:
+                    return PipelineConfig.fast_guided_chroma()  # 49ms
+                return PipelineConfig.nlm_chroma_preset()  # NIQE=7.33, BRISQUE=41.28
             else:  # EXTREME
+                if motion > 0.5:
+                    return PipelineConfig.optimal_ultrafast()
                 return PipelineConfig.aggressive()
 
-        # Impulse noise
+        # Impulse noise — median + wavelet
         if ntype == NoiseType.IMPULSE:
             if nlevel == NoiseLevel.MEDIUM:
-                # optimal-balanced has wavelet + detail_boost
-                return PipelineConfig.optimal_balanced()
+                if motion > 0.5:
+                    return PipelineConfig.cross_chroma_detail()  # 169ms
+                return PipelineConfig.optimal_bior4()  # NIQE=7.26
             elif nlevel == NoiseLevel.HIGH:
+                if motion > 0.5:
+                    return PipelineConfig.fast_guided_chroma()
                 return PipelineConfig.wavelet_denoise()
             else:
+                if motion > 0.5:
+                    return PipelineConfig.optimal_ultrafast()
                 return PipelineConfig.aggressive()
 
-        # Medium noise (general fallback)
+        # General fallback by noise level
         if nlevel == NoiseLevel.MEDIUM:
-            # optimal-balanced best NIQE score
-            return PipelineConfig.optimal_balanced()
+            # optimal-bior4: best NIQE overall
+            if motion > 0.5:
+                return PipelineConfig.cross_chroma_detail()
+            return PipelineConfig.optimal_bior4()
 
         # High noise
         if nlevel == NoiseLevel.HIGH:
-            return PipelineConfig.video_enhanced()
+            if motion > 0.5:
+                return PipelineConfig.fast_guided_chroma()
+            return PipelineConfig.nlm_chroma_preset()
 
         # Extreme
+        if motion > 0.5:
+            return PipelineConfig.optimal_ultrafast()
         return PipelineConfig.aggressive()
 
     def _tune_config(self, cfg: PipelineConfig, profile: NoiseProfile) -> None:
