@@ -15,5 +15,8 @@ dependencies = [
     "brisque",
 ]
 
+[tool.setuptools.packages.find]
+include = ["smu_sig_prossessing*"]
+
 [project.scripts]
 smu-sig = "smu_sig_prossessing.__main__:main"

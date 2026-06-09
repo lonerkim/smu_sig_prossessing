@@ -1213,3 +1213,90 @@ No-reference metric 기준 최고 preset:
 - **Date**: 2026-06-09
 - **Author**: 김승민, 김원석 (6팀)
 - **Git Tag**: v3.8
+
+---
+
+## v4.0 (2026-06-09) — Super-Resolution + 11-Metric Evaluation + Noise-Aware Pipeline
+
+### 변경 개요
+
+**41개 필터** (+1), **54개 preset** (+4)로 확장.
+11-metric Composite Score 61.38 (신기록, grey-premium).
+
+### 신규 필터
+
+| 필터 | 설명 | 파라미터 |
+|------|------|----------|
+| `super_resolve` | Lanczos4/Cubic/EDSR 2x 업스케일 | scale=2.0, method=lanczos/cubic/edsr |
+
+### 신규 Preset (4개)
+
+| Preset | 설명 |
+|--------|------|
+| super-resolve | 순수 2x Lanczos4 업스케일 |
+| enhanced-sr | 2x 업스케일 + unsharp + channel_correction + CLAHE |
+
+(Note: super-resolve/enhanced-sr are upscaling presets, not directly comparable on same-size benchmarks)
+
+### 신규 메트릭 (MS-SSIM)
+
+| 메트릭 | 설명 | 가중치 |
+|--------|------|:-----:|
+| MS-SSIM | Multi-Scale Structural Similarity (Wang et al. 2003) | 5.0% |
+
+**11개 메트릭 최종 가중치**:
+
+| Metric | Weight | Metric | Weight |
+|--------|:-----:|--------|:-----:|
+| PSNR | 10.0% | Detail Recovery | 7.0% |
+| SSIM | 10.0% | Artifact Score | 7.0% |
+| **MS-SSIM** | **5.0%** | VIF | 4.0% |
+| Color Fidelity | 11.0% | NIQE | 10.0% |
+| Edge Retention | 11.0% | BRISQUE | **14.0%** |
+| Noise Level | 11.0% | | |
+
+### Noise-Aware Adaptive Pipeline
+
+- `smu_sig_prossessing/noise_estimation.py`: 신규 모듈
+  - `estimate_noise_level()`: Laplacian 기반 noise std 추정
+  - `classify_noise()`: low/medium/high/extreme 분류
+  - `suggest_preset()`: noise level + motion 기반 preset 추천
+  - `suggest_params()`: 12개 filter parameter 자동 조정
+- `adaptive.py` 확장: `noise_aware_process()` 메서드 추가
+  - noise 추정 → motion 감지 → preset 선택 → parameter override → 처리
+
+### Super-Resolution
+
+- OpenCV INTER_LANCZOS4 기반 2x 업스케일
+- EDSR 모델 지원 (모델 파일 존재시, cv2.dnn_superres)
+
+### Architecture
+
+- `filters.py`: 40 → 41 filters (Phase 14: Super-Resolution)
+- `config.py`: 50 → 54 static presets (+4)
+- `main.py`: 50 → 54 preset names
+- `smu_sig_prossessing/noise_estimation.py`: 신규 모듈
+- `smu_sig_prossessing/adaptive.py`: noise_aware_process() 추가
+- `smu_sig_prossessing/auto_evaluation.py`: 10→11 metrics (+MS-SSIM)
+- `pyproject.toml`: v4.0.0
+- 신규 의존성: opencv-contrib-python, sewar, imageio
+
+### v4.0 Benchmark Top 10
+
+| # | Preset | Composite | PSNR | MS-SSIM |
+|---|--------|:--------:|:----:|:------:|
+| 1🥇 | grey-premium | **61.38** | 19.09 | 0.8516 |
+| 2🥈 | grey-guided-chroma | **61.23** | 19.04 | 0.8419 |
+| 3🥉 | temporal-ntsc | **60.24** | 19.01 | 0.8486 |
+| 4 | chroma-focus | **60.10** | 18.52 | 0.8338 |
+| 5 | fast-guided-chroma | **60.04** | 19.00 | 0.8436 |
+| 6 | temporal-premium | **59.77** | 18.95 | **0.8638** |
+| 7 | grey-fast | **59.09** | 18.98 | 0.8466 |
+| 8 | chroma-guided-bior4 | **58.40** | 18.96 | 0.8528 |
+| 9 | rolling-premium | **58.27** | 18.92 | **0.8876** |
+| 10 | fast-premium | **57.61** | 18.30 | 0.8203 |
+
+No-reference metric 기준:
+- 🥇 NIQE: chroma-bior4-detail (7.23)
+- 🥇 BRISQUE: temporal-bior4 (34.04)
+|

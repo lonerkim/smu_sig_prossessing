@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """v3.3 benchmark — focus on new presets, skip slow BM3D variants."""
 import sys, os, time
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _SCRIPT_DIR)
+sys.path.insert(0, os.path.dirname(_SCRIPT_DIR))  # repo root
 import cv2
 from smu_sig_prossessing import pipeline as pl
 from smu_sig_prossessing.degradation import degrade_image

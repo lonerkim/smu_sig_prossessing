@@ -1006,4 +1006,41 @@ motion_weight = np.clip(motion_map / 64.0, 0.0, 1.0)
 
 ---
 
+### 41. super_resolve
+
+**원리**
+Super-resolution은 단일 저해상도 이미지에서 고해상도 이미지를 복원하는 기술입니다. 본 구현에서는 OpenCV의 고급 보간법(INTER_LANCZOS4)을 사용하여 2배 업스케일링을 수행합니다. INTER_LANCZOS4는 8×8 이웃 픽셀에 Lanczos 함수를 적용한 sinc 기반 보간으로, 가장 선명한 결과를 제공합니다.
+
+**작동 방식**
+- `scale` 파라미터(기본 2.0)에 따라 출력 해상도 결정
+- `method` 파라미터로 보간 방식 선택:
+  - `lanczos` (기본): INTER_LANCZOS4 — 8-tap sinc, 최고 선명도
+  - `cubic`: INTER_CUBIC — 4-tap cubic, 부드러움
+  - `edsr`: OpenCV DNN EDSR 모델 — 학습 기반 초해상도 (모델 파일 필요)
+
+**구현 상세**
+```python
+@register("super_resolve")
+def super_resolve_filter(img: np.ndarray, scale: float = 2.0,
+                          method: str = "lanczos") -> np.ndarray:
+    h, w = img.shape[:2]
+    new_size = (int(w * scale), int(h * scale))
+
+    if method == "edsr":
+        try:
+            from cv2 import dnn_superres
+            sr = dnn_superres.DnnSuperResImpl_create()
+            sr.readModel("models/EDSR_x2.pb")
+            sr.setModel("edsr", 2)
+            return sr.upsample(img)
+        except Exception:
+            # Fallback to Lanczos
+            pass
+
+    interp = cv2.INTER_LANCZOS4 if method == "lanczos" else cv2.INTER_CUBIC
+    return cv2.resize(img, new_size, interpolation=interp)
+```
+
+---
+
 > **참고**: 위 설명에 사용된 파라미터 기본값은 각 필터의 `FILTER_REGISTRY` 등록 시점의 설정을 기준으로 합니다. 실제 파이프라인 실행 시 `pipeline_config.json` 또는 개별 필터 호출 시 전달되는 인자에 의해 재정의될 수 있습니다.

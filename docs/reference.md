@@ -59,7 +59,7 @@
 
 - **이름:** BRISQUE (Blind/Referenceless Image Spatial Quality Evaluator)
 - **출처:** https://github.com/bukalapak/pybrisque 및 관련 구현체
-- **프로젝트에서의 용도:** 무참조(No-Reference) 이미지 품질 평가 지표 산출. 디노이징 및 강화 처리 후 화질을 정량적으로 평가
+- **프로젝트에서의 용도:** 무참조(No-Reference) 이미지 품질 평가 지표 산출. 디노이징 및 강화 처리 후 화질을 정량적으로 평가 (pip 패치됨 — scale_features 버그 수정)
 - **라이선스:** MIT
 
 ---
@@ -174,3 +174,24 @@
 
 - **출처:** Farnebäck, G. (2003). "Two-frame motion estimation based on polynomial expansion." *Scandinavian Conference on Image Analysis (SCIA)*, 363–370.
 - **프로젝트에서의 용도:** 연속 프레임 간 밀집 광학 흐름(Dense Optical Flow) 추정. 모션 기반 프레임 정렬, 움직임 감지, 영상 안정화 등에 활용
+
+### 1.9 sewar (`sewar`)
+
+- **이름:** sewar (Simple Image Quality Assessment)
+- **출처:** https://github.com/andrewek/sewar
+- **프로젝트에서의 용도:** Multi-Scale SSIM(MS-SSIM), VIF-P, SCC 등 다양한 참조 기반 이미지 품질 평가 메트릭 제공
+- **라이선스:** MIT
+
+### 1.10 OpenCV Contrib (`opencv-contrib-python`)
+
+- **이름:** OpenCV Contrib Modules
+- **출처:** https://github.com/opencv/opencv_contrib
+- **프로젝트에서의 용도:** DNN Super-Resolution 모듈(`dnn_superres`) — EDSR 모델 기반 초해상도 업스케일링
+- **라이선스:** Apache 2.0
+
+### 1.11 imageio (`imageio`)
+
+- **이름:** ImageIO
+- **출처:** https://imageio.readthedocs.io / https://github.com/imageio/imageio
+- **프로젝트에서의 용도:** 다양한 이미지/비디오 포맷 입출력, GIF 애니메이션 생성
+- **라이선스:** BSD 2-Clause
