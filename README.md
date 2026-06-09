@@ -1,30 +1,31 @@
-# 아날로그 영상 잡음 완화 파이프라인 v3.0
+# 아날로그 영상 잡음 완화 파이프라인 v3.8
 
 영상처리 기말 프로젝트 — 6팀 (김승민, 김원석)
 
 ## 프로젝트 개요
 아날로그 FPV DVR 영상에서 시인성을 해치는 잡음·색왜곡·대비저하를 기본 영상처리 기법으로 완화하는 범용 파이프라인.
 
-**v3.0 주요 개선**:
-- 🆕 **BM3D denoising** — Block-Matching 3D, state-of-the-art collaborative filtering
-- 🆕 **Retinex MSRCP** — Multi-Scale Retinex with Chromaticity Preservation for illumination correction
-- 🆕 **4개 신규 preset** — bm3d-denoise, retinex-enhance, retinex-bm3d, bm3d-fast
-- 🆕 **Spatio-temporal denoising** — optical flow motion compensation, frame averaging
-- 🎯 **7개 신규 필터** (총 25개) — guided filter, TV denoising, anisotropic diffusion, block DCT, temporal, BM3D, Retinex
-- ⚡ **Ablation 최적화 preset** — optimized-fast (PSNR 19.00, edge-preserve 대비 18× 빠름)
-- 🔬 **Batch ablation framework** — `run_ablation.py`로 자동 preset/param/filter ON-OFF 테스트
-- 📋 **Heuristic preview** — `--sample N` 플래그로 전체 처리 전 N프레임 미리보기
-- 🖼️ **실제 아날로그 아티팩트**로 기본 degrade 변경 (diagonal periodic noise 제거 → horizontal line noise + dropout)
+**v3.8 최종 사양**:
+- 🎯 **40개 필터** — 13개 Phase (noise removal, spatial, edge-aware, frequency, color, temporal, denoising, NTSC, BM3D, Retinex, Rolling Guidance, Cross Bilateral, Deinterlace)
+- 🚀 **50개 preset** — Grey-premium (59.04), grey-guided-chroma (58.72), chroma-focus (57.55) 등
+- 📊 **10개 평가 메트릭** — PSNR/SSIM/ΔE/Edge/Noise/Detail/Artifact/VIF/NIQE/BRISQUE
+- 🧠 **No-reference quality metrics** — NIQE (best 7.23) + BRISQUE (best 34.04)
+- ⚡ **실시간 처리** — ultralight 3.8ms (260fps), optimal-ultrafast 2.3ms
+- 🎛️ **Adaptive pipeline** — Motion-aware branch selection
+- 🔄 **자동 개선 루프** — 2시간마다 benchmark + experiments + commit
 
 ## 구조
 ```
 smu_sig_prossessing/        — 핵심 패키지 (모듈식)
   __init__.py               — 패키지 임포트
-  config.py                 — PipelineConfig (18개 preset)
-  filters.py                — 필터 레지스트리 (25개 필터)
+  config.py                 — PipelineConfig (50개 preset)
+  filters.py                — 필터 레지스트리 (40개 필터)
   pipeline.py               — 파이프라인 러너
   degradation.py            — 열화 (기본 + NTSC, horizontal line noise + dropout)
   evaluation.py             — PSNR/SSIM + 시각화
+  auto_evaluation.py        -- 자동 10메트릭 + Composite Score
+  eval_viz.py               -- 시각화 (radar/bar/grid/정성시트)
+  adaptive.py               -- Adaptive pipeline with motion detection
   ntsc_plugin.py            — zhuker/ntsc (ringPattern.npy 포함)
 
 input/                      — 입력 데이터 (실제 영상 + 이미지)
@@ -211,17 +212,20 @@ python run_auto_eval.py -i input/analog_whoop_footage.mp4 --degrade none --sampl
 python run_auto_eval.py -i input/test_small.jpg --qualitative-only
 ```
 
-### 7개 자동 메트릭
+### 10개 자동 메트릭
 
 | 메트릭 | 단위 | 방향 | 설명 |
 |--------|------|------|------|
 | PSNR | dB | ↑ | Peak Signal-to-Noise Ratio |
 | SSIM | — | ↑ | Structural Similarity |
-| Color Fidelity | ΔE | ↓ | CIE76 LAB 색차 |
+| Color Fidelity | ΔE | ↓ | CIEDE2000 색차 |
 | Edge Retention | ratio | ↑ | Canny edge 비율 (1.0=원본 동일) |
 | Noise Level | Lap. var | ↓ | Laplacian 분산 |
 | Detail Recovery | ratio | ↑ | 고주파 에너지 보존율 |
 | Artifact Score | score | ↓ | Ringing+blocking+overshooting |
+| VIF | — | ↑ | Visual Information Fidelity |
+| NIQE | score | ↓ | Natural Image Quality Evaluator (0~20) |
+| BRISQUE | score | ↓ | Blind/Referenceless Image Spatial Quality Evaluator (0~100) |
 
 ### 산출물
 
@@ -237,7 +241,7 @@ output/eval/
   qualitative_notes_{ts}.md       — 정성 코멘트 템플릿
 ```
 
-## 등록된 필터 (25개)
+## 등록된 필터 (40개)
 
 ```
   anisotropic_diffusion     — Perona-Malik anisotropic diffusion
@@ -265,6 +269,17 @@ output/eval/
   unsharp_mask              — 언샤프 마스크
   wavelet                   — Wavelet denoising (db4, VisuShrink)
   wiener                    — Wiener filter (주파수 도메인)
+  rolling_guidance          — Rolling Guidance Filter (iterative edge-preserving)
+  cross_bilateral           — Joint/Cross Bilateral Filter (guide image 기반)
+  detail_boost              — Edge-aware detail enhancement
+  temporal_nlm_multi        — Multi-frame NLM (OpenCV fastNlMeansDenoisingColoredMulti)
+  bm4d_volume               — BM4D spatio-temporal volume denoising
+  adaptive_equalize         — CLAHE + brightness preservation
+  grey_edge                 — Grey-Edge color constancy (van de Weijer 2007)
+  deinterlace               — Deinterlace (bob/weave/motion-adaptive)
+  domain_transform          — Domain Transform Filter (edge-aware smoothing)
+  chroma_denoise            — Chroma channel denoising (bilateral on UV)
+  vertical_notch            — Vertical notch filter (horizontal periodic noise)
 ```
 
 ## PipelineConfig 프로그래밍 예제
