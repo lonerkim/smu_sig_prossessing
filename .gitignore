@@ -1,6 +1,13 @@
+# Python
 __pycache__/
 *.pyc
-.DS_Store
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Media (large files)
 input/
 output/
 samples/
@@ -8,6 +15,6 @@ samples/
 *.avi
 *.mov
 *.mkv
-.venv/
-__pycache__/
-*.pyc
+
+# OS
+.DS_Store
