@@ -85,15 +85,16 @@ class AutoEvaluator:
 
     # 가중치 (합=1.0) — 프로젝트 특성에 맞게 조정 가능
     WEIGHTS = {
-        "psnr": 0.1300,
-        "ssim": 0.1700,
-        "color_fidelity": 0.1300,
-        "edge_retention": 0.1300,
-        "noise_level": 0.1300,
-        "detail_recovery": 0.0850,
-        "artifact_score": 0.0850,
-        "vif": 0.0450,
-        "niqe": 0.0950,
+        "psnr": 0.1150,
+        "ssim": 0.1500,
+        "color_fidelity": 0.1150,
+        "edge_retention": 0.1150,
+        "noise_level": 0.1150,
+        "detail_recovery": 0.0750,
+        "artifact_score": 0.0750,
+        "vif": 0.0400,
+        "niqe": 0.0850,
+        "brisque": 0.1150,
     }
 
     def __init__(self, weights: dict | None = None):
@@ -311,6 +312,33 @@ class AutoEvaluator:
         from calculate_niqe import compute_niqe
         return compute_niqe(img, patch_size, stride)
 
+    def _brisque(self, img: np.ndarray) -> float:
+        """
+        BRISQUE (Blind/Referenceless Image Spatial Quality Evaluator) —
+        no-reference perceptual quality metric.
+
+        Lower = better quality.  Typical range: 0–100.
+        BRISQUE uses scene statistics of locally normalized luminance
+        coefficients to quantify naturalness.  It is trained on the
+        LIVE database with human opinion scores.
+
+        Implementation uses the 'brisque' package which wraps libsvm
+        with pre-trained models.
+        """
+        try:
+            from brisque import BRISQUE
+            brisque_obj = BRISQUE()
+            # BRISQUE.score() expects uint8 RGB or grayscale
+            if len(img.shape) == 3 and img.shape[2] == 3:
+                # BGR → RGB for the brisque library
+                rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                return float(brisque_obj.score(rgb))
+            else:
+                return float(brisque_obj.score(img))
+        except Exception:
+            # Fallback if brisque fails or image is too small
+            return 50.0
+
     # ─── Composite Score ──────────────────────────────────────────
 
     def compute_composite(self, result: EvalResult) -> float:
@@ -348,6 +376,9 @@ class AutoEvaluator:
             elif m.name == "niqe":
                 # NIQE: 0~15 → 100~0 (lower is better, natural ~2.5-4.5)
                 scores["niqe"] = np.clip((1 - m.value / 15) * 100, 0, 100)
+            elif m.name == "brisque":
+                # BRISQUE: 0~100 → 100~0 (lower is better)
+                scores["brisque"] = np.clip(100.0 - m.value, 0, 100)
 
         total = 0.0
         for key, weight in self.WEIGHTS.items():
@@ -386,7 +417,7 @@ class AutoEvaluator:
             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
 
-        # 9개 메트릭 산출 (8 + NIQE)
+        # 10개 메트릭 산출 (8 + NIQE + BRISQUE)
         metrics = [
             MetricResult("psnr", self._psnr(origin, processed), "dB",
                          "Peak Signal-to-Noise Ratio", "higher"),
@@ -406,6 +437,8 @@ class AutoEvaluator:
                          "Visual Information Fidelity (higher=better)", "higher"),
             MetricResult("niqe", self._niqe(processed), "score",
                          "NIQE no-reference quality (lower=better)", "lower"),
+            MetricResult("brisque", self._brisque(processed), "score",
+                         "BRISQUE no-reference quality (lower=better)", "lower"),
         ]
 
         # degraded 노이즈 레벨도 참고용으로 추가
